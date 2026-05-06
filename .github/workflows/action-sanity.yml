@@ -15,12 +15,38 @@ on:
       - "README.md"
       - "examples/**"
   workflow_dispatch:
+  schedule:
+    # Weekly canary for GitHub runner, nested action, cache, and release-binary drift.
+    - cron: "17 6 * * 1"
 
 permissions:
   contents: read
   actions: write
 
 jobs:
+  install-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Exercise local action install path
+        if: github.event_name == 'pull_request'
+        uses: ./
+        with:
+          bundles: ".assay/evidence/*.tar.gz"
+          fail_on: error
+          sarif: false
+          comment_diff: false
+
+      - name: Exercise released action install path
+        if: github.event_name != 'pull_request'
+        uses: Rul1an/assay-action@v2
+        with:
+          bundles: ".assay/evidence/*.tar.gz"
+          fail_on: error
+          sarif: false
+          comment_diff: false
+
   baseline-delta:
     runs-on: ubuntu-latest
     steps:
@@ -61,7 +87,19 @@ jobs:
           chmod +x bin/assay
           echo "$PWD/bin" >> "$GITHUB_PATH"
 
-      - name: Review deterministic evidence fixture
+      - name: Review deterministic evidence fixture with local action
+        if: github.event_name == 'pull_request'
+        uses: ./
+        with:
+          bundles: ".assay/evidence/*.tar.gz"
+          fail_on: error
+          sarif: false
+          comment_diff: false
+          baseline_key: action-sanity
+          write_baseline: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Review deterministic evidence fixture with released action
+        if: github.event_name != 'pull_request'
         uses: Rul1an/assay-action@v2
         with:
           bundles: ".assay/evidence/*.tar.gz"

@@ -205,12 +205,21 @@ runs:
         DOWNLOAD_URL="https://github.com/$REPO/releases/download/${VERSION}/assay-${VERSION}-${TARGET}.tar.gz"
         echo "Downloading Assay ${VERSION} for ${TARGET}..."
 
-        if ! curl -fsSL "$DOWNLOAD_URL" | tar xz -C ~/.assay/bin; then
+        EXTRACT_DIR=$(mktemp -d)
+        trap 'rm -rf "$EXTRACT_DIR"' EXIT
+
+        if ! curl -fsSL "$DOWNLOAD_URL" | tar xz -C "$EXTRACT_DIR"; then
           echo "::error::Failed to download Assay from $DOWNLOAD_URL"
           exit 1
         fi
 
-        chmod +x ~/.assay/bin/assay
+        ASSAY_BIN=$(find "$EXTRACT_DIR" -type f -name assay | head -1)
+        if [ -z "$ASSAY_BIN" ]; then
+          echo "::error::Downloaded Assay archive did not contain an assay binary"
+          exit 1
+        fi
+
+        install -m 0755 "$ASSAY_BIN" ~/.assay/bin/assay
         echo "✓ Installed Assay ${VERSION}"
 
     - name: Add to PATH and verify
