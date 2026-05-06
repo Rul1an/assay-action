@@ -11,10 +11,12 @@
 set -euo pipefail
 
 INPUT="${1:?usage: extract_surface.sh <events.ndjson|bundle.tar.gz|bundle-dir>}"
+QUIET="${ASSAY_EXTRACT_SURFACE_QUIET:-0}"
 WORK=$(mktemp -d -t assay-extract-surface-XXXXXX)
 trap 'rm -rf "$WORK"' EXIT
 
 EVENTS="$WORK/events.ndjson"
+SURFACE="$WORK/surface.tsv"
 
 if [ -d "$INPUT" ]; then
   if [ -f "$INPUT/events.ndjson" ]; then
@@ -60,4 +62,11 @@ jq -r '
   else
     empty
   end
-' "$EVENTS" | awk -F '\t' 'NF == 2 && $2 != "" { print }' | sort -u
+' "$EVENTS" | awk -F '\t' 'NF == 2 && $2 != "" { print }' | sort -u > "$SURFACE"
+
+if [ ! -s "$SURFACE" ] && [ "$QUIET" != "1" ]; then
+  echo "extract_surface: no runtime capability events found in: $INPUT" >&2
+  echo "extract_surface: receipt-only or lifecycle-only bundles are expected to produce an empty surface." >&2
+fi
+
+cat "$SURFACE"

@@ -125,6 +125,18 @@ case_receipt_skip() {
   assert_contains "$out" "Capability diff skipped: no runtime capability events found."
 }
 
+case_receipt_extract_message() {
+  make_pair receipt-extract-message
+  bundle "$BASE" "$(receipt)"
+  err="$WORK/receipt-extract-message.err"
+  out=$(bash "$HERE/extract_surface.sh" "$BASE" 2> "$err")
+  if [ -n "$out" ]; then
+    echo "expected empty surface output for receipt-only bundle" >&2
+    return 1
+  fi
+  assert_contains "$(cat "$err")" "receipt-only or lifecycle-only bundles are expected to produce an empty surface"
+}
+
 case_lifecycle_skip() {
   make_pair lifecycle-skip
   bundle "$BASE" "$(profile)"
@@ -338,6 +350,7 @@ case_tar_bundle_input() {
 }
 
 record "receipt-archetype-skip" case_receipt_skip
+record "receipt-extract-message" case_receipt_extract_message
 record "lifecycle-only-skip" case_lifecycle_skip
 record "noop-runtime" case_noop_runtime
 record "add-network" case_add_net

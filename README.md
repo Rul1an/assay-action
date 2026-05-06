@@ -174,6 +174,17 @@ Assay's planned diff mode is not exposed through the action yet, but an
 experimental script preview is available for people who want to inspect the
 early shape on their own bundles.
 
+This preview is intentionally **scripts only**:
+
+- no `mode: diff` in `action.yml`
+- no PR gate
+- no production "versus main" baseline claim
+- schema and CLI may change in any commit
+
+Do not rely on the preview in production CI. Production capability diff remains
+blocked by [ADR 0001](docs/adrs/0001-baseline-surface.md) and
+[ADR 0002](docs/adrs/0002-scope-b-observation-gate.md).
+
 ```bash
 bash scripts/diff_surface.sh main-run.tar.gz pr-run.tar.gz
 ```
@@ -195,18 +206,8 @@ Example output:
 Summary: +3 new, -0 removed across capability dimensions.
 ```
 
-This preview is intentionally **scripts only**:
-
-- no `mode: diff` in `action.yml`
-- no PR gate
-- no production "versus main" baseline claim
-- schema and CLI may change in any commit
-
-Do not rely on the preview in production CI. Production capability diff remains
-blocked by [ADR 0001](docs/adrs/0001-baseline-surface.md) and
-[ADR 0002](docs/adrs/0002-scope-b-observation-gate.md). See
-[Experimental Capability Diff Preview](docs/experimental-capability-diff.md) for
-usage and guardrails.
+See [Experimental Capability Diff Preview](docs/experimental-capability-diff.md)
+for usage, guardrails, and the feedback path.
 
 ## Inputs
 

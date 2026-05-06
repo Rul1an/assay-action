@@ -6,6 +6,22 @@ This preview exposes the early capability-surface diff shape without adding a
 new action mode. It is meant for local exploration and feedback, not production
 PR gating.
 
+## Hard Guardrails
+
+- This is not exposed through `action.yml`.
+- This is not a Marketplace action mode.
+- This is not a PR gate.
+- The output schema and script CLI may change in any commit.
+- Do not rely on this output in production CI.
+- The scripts do not implement ADR 0001 baseline-surface invariants.
+- The scripts do not claim a trustworthy "versus main" production comparison.
+
+Production capability diff remains blocked by:
+
+- [ADR 0001](./adrs/0001-baseline-surface.md), the baseline-surface trust
+  contract.
+- [ADR 0002](./adrs/0002-scope-b-observation-gate.md), the observation gate.
+
 ## What It Does
 
 Given two Assay runtime bundles, or two extracted `events.ndjson` files, the
@@ -66,22 +82,6 @@ aggregated so they do not drown out deny and warn signals.
 VERBOSE=1 bash scripts/diff_surface.sh main-run.tar.gz pr-run.tar.gz
 ```
 
-## Hard Guardrails
-
-- This is not exposed through `action.yml`.
-- This is not a Marketplace action mode.
-- This is not a PR gate.
-- The output schema and script CLI may change in any commit.
-- Do not rely on this output in production CI.
-- The scripts do not implement ADR 0001 baseline-surface invariants.
-- The scripts do not claim a trustworthy "versus main" production comparison.
-
-Production capability diff remains blocked by:
-
-- [ADR 0001](./adrs/0001-baseline-surface.md), the baseline-surface trust
-  contract.
-- [ADR 0002](./adrs/0002-scope-b-observation-gate.md), the observation gate.
-
 ## Known Limits
 
 - Tool calls are diffed by tool name only. Arguments are intentionally not part
@@ -105,3 +105,13 @@ true:
 
 The preview code may be rewritten or discarded when production capability diff
 is implemented. Treat it as a learning tool, not as an API.
+
+## Feedback
+
+If the preview misses a useful capability surface, crashes on a real bundle, or
+produces a confusing diff, please open an issue:
+
+<https://github.com/Rul1an/assay-action/issues/new>
+
+Use `preview/capability-diff` in the issue title so the feedback is easy to
+find.

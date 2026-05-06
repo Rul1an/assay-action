@@ -14,8 +14,8 @@ VERBOSE="${VERBOSE:-0}"
 WORK=$(mktemp -d -t assay-capability-diff-XXXXXX)
 trap 'rm -rf "$WORK"' EXIT
 
-bash "$HERE/extract_surface.sh" "$BASE_EVENTS" > "$WORK/base.surface"
-bash "$HERE/extract_surface.sh" "$CURRENT_EVENTS" > "$WORK/current.surface"
+ASSAY_EXTRACT_SURFACE_QUIET=1 bash "$HERE/extract_surface.sh" "$BASE_EVENTS" > "$WORK/base.surface"
+ASSAY_EXTRACT_SURFACE_QUIET=1 bash "$HERE/extract_surface.sh" "$CURRENT_EVENTS" > "$WORK/current.surface"
 
 BASE_COUNT=$(sed '/^$/d' "$WORK/base.surface" | wc -l | tr -d ' ')
 CURRENT_COUNT=$(sed '/^$/d' "$WORK/current.surface" | wc -l | tr -d ' ')
