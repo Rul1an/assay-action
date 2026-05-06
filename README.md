@@ -128,7 +128,7 @@ is correct or safe. It makes the observed evidence boundary reviewable.
 
 The reports artifact is intentionally named and visible. If a reviewer asks
 "what did this run check?", download `assay-reports-${{ github.run_id }}`.
-When bundles are found, the action uploads the reports artifact even when the
+When bundles are found, the action uploads the named reports artifact even when the
 final Assay threshold fails.
 
 ## Job Summary Preview
