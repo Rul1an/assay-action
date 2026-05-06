@@ -1,0 +1,28 @@
+name: assay-evidence
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Capture and review evidence
+        uses: Rul1an/assay-action@v2
+        with:
+          # capture runs this command first; review mode only checks existing bundles.
+          mode: capture
+          run: assay run --policy policy.yaml -- pytest tests/
+          bundles: ".assay/evidence/*.tar.gz"
+          baseline_key: ${{ github.event.repository.name }}
+          write_baseline: ${{ github.ref == 'refs/heads/main' }}
+          fail_on: error

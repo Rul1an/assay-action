@@ -13,8 +13,8 @@
 #       fail_on: warn
 #       sarif: true
 
-name: 'Assay - AI Agent Security'
-description: 'Verify and lint AI agent evidence bundles. Catch security issues before production. Native GitHub Security tab integration.'
+name: 'Assay - Evidence Artifacts'
+description: 'Verify and lint AI agent evidence bundles. Get PR summaries, SARIF, and downloadable Assay reports.'
 author: 'Assay Contributors'
 
 branding:
@@ -39,7 +39,7 @@ inputs:
     required: false
     default: ''
   baseline_dir:
-    description: 'Path to baseline bundles for diff'
+    description: 'Path to a baseline reports directory containing lint.json'
     required: false
     default: ''
   baseline_key:
@@ -58,6 +58,14 @@ inputs:
     description: 'Deprecated. Use reports_dir output instead.'
     required: false
     default: 'false'
+  mode:
+    description: 'Action mode: review existing bundles, or capture then review'
+    required: false
+    default: 'review'
+  run:
+    description: 'Optional shell command that creates evidence bundles before verification when mode is capture'
+    required: false
+    default: ''
   version:
     description: 'Assay CLI version to install'
     required: false
@@ -73,6 +81,9 @@ outputs:
   findings_warn:
     description: 'Count of warning-level findings'
     value: ${{ steps.process.outputs.findings_warn }}
+  findings_info:
+    description: 'Count of info-level findings'
+    value: ${{ steps.process.outputs.findings_info }}
   sarif_path:
     description: 'Path to generated SARIF file'
     value: ${{ steps.process.outputs.sarif_path }}
@@ -82,10 +93,38 @@ outputs:
   reports_dir:
     description: 'Path to reports directory (for artifact upload)'
     value: ${{ steps.process.outputs.reports_dir }}
+  baseline_delta:
+    description: 'One-line new-finding summary versus the restored baseline'
+    value: ${{ steps.baseline-diff.outputs.summary }}
 
 runs:
   using: 'composite'
   steps:
+    # =========================================================================
+    # E0: Input validation - fail before install/capture work
+    # =========================================================================
+
+    - name: Validate mode
+      if: inputs.mode != 'review' && inputs.mode != 'capture'
+      shell: bash
+      run: |
+        echo "::error::mode must be 'review' or 'capture'"
+        exit 2
+
+    - name: Validate capture mode
+      if: inputs.mode == 'capture' && inputs.run == ''
+      shell: bash
+      run: |
+        echo "::error::mode=capture requires the run input"
+        exit 2
+
+    - name: Validate fail threshold
+      if: inputs.fail_on != 'error' && inputs.fail_on != 'warn' && inputs.fail_on != 'info' && inputs.fail_on != 'none'
+      shell: bash
+      run: |
+        echo "::error::fail_on must be one of: error, warn, info, none"
+        exit 2
+
     # =========================================================================
     # E1: Foundation - Platform detection, caching, binary installation
     # =========================================================================
@@ -134,7 +173,8 @@ runs:
     - name: Restore cached binary
       id: cache
       if: steps.check-existing.outputs.skip_install != 'true'
-      uses: actions/cache@v4
+      uses: actions/cache@v5
+      continue-on-error: true
       with:
         path: ~/.assay/bin
         key: assay-${{ inputs.version }}-${{ steps.platform.outputs.target }}
@@ -188,9 +228,18 @@ runs:
 
         echo "installed=true" >> $GITHUB_OUTPUT
 
+    - name: Run evidence capture command
+      if: inputs.mode == 'capture' && inputs.run != ''
+      shell: bash
+      env:
+        ASSAY_CAPTURE_COMMAND: ${{ inputs.run }}
+      run: |
+        set -euo pipefail
+        export PATH="$HOME/.assay/bin:$PATH"
+        bash -o pipefail -c "$ASSAY_CAPTURE_COMMAND"
+
     # =========================================================================
     # E2: Evidence Processing - Discovery, verify, lint
-    # (Placeholder - will be implemented in Epic 2)
     # =========================================================================
 
     - name: Discover evidence bundles
@@ -242,9 +291,11 @@ runs:
         # Verify all bundles
         VERIFIED=0
         FAILED=0
+        : > /tmp/assay-verified-bundles.txt
         for bundle in $BUNDLES; do
           if assay evidence verify "$bundle" 2>/dev/null; then
             ((VERIFIED++)) || true
+            echo "$bundle" >> /tmp/assay-verified-bundles.txt
           else
             ((FAILED++)) || true
             echo "::error file=$bundle::Bundle verification failed"
@@ -256,67 +307,97 @@ runs:
 
         if [ "$FAILED" -gt 0 ]; then
           echo "verified=false" >> $GITHUB_OUTPUT
-          exit 2  # Distinct exit code for verification failure
+        else
+          echo "verified=true" >> $GITHUB_OUTPUT
         fi
-        echo "verified=true" >> $GITHUB_OUTPUT
 
         # Lint all bundles (one at a time, aggregate results)
         TOTAL_ERRORS=0
         TOTAL_WARNS=0
-        echo '{"findings":[]}' > "$REPORTS_DIR/lint.json"
+        TOTAL_INFOS=0
+        : > /tmp/all-findings.jsonl
 
-        for bundle in $BUNDLES; do
+        VERIFIED_BUNDLES=$(cat /tmp/assay-verified-bundles.txt || true)
+
+        for bundle in $VERIFIED_BUNDLES; do
           echo "Linting: $bundle"
 
           # Lint to JSON for counting
-          LINT_JSON=$(assay evidence lint --format json "$bundle" 2>/dev/null || echo '{"findings":[]}')
+          if LINT_JSON=$(assay evidence lint --format json "$bundle" 2>/dev/null); then
+            :
+          else
+            LINT_JSON='{"findings":[]}'
+          fi
 
           # Count findings in this bundle
           BUNDLE_ERRORS=$(echo "$LINT_JSON" | jq '[.findings // [] | .[] | select(.severity == "error")] | length' 2>/dev/null || echo "0")
           BUNDLE_WARNS=$(echo "$LINT_JSON" | jq '[.findings // [] | .[] | select(.severity == "warning")] | length' 2>/dev/null || echo "0")
+          BUNDLE_INFOS=$(echo "$LINT_JSON" | jq '[.findings // [] | .[] | select(.severity == "info")] | length' 2>/dev/null || echo "0")
 
           TOTAL_ERRORS=$((TOTAL_ERRORS + BUNDLE_ERRORS))
           TOTAL_WARNS=$((TOTAL_WARNS + BUNDLE_WARNS))
+          TOTAL_INFOS=$((TOTAL_INFOS + BUNDLE_INFOS))
 
           # Append findings to aggregate
-          echo "$LINT_JSON" | jq '.findings // []' >> /tmp/all-findings.json 2>/dev/null || true
+          echo "$LINT_JSON" | jq -c '.findings // [] | .[]' >> /tmp/all-findings.jsonl 2>/dev/null || true
 
           # Generate SARIF for this bundle
           assay evidence lint --format sarif "$bundle" > "$REPORTS_DIR/lint-$(basename "$bundle" .tar.gz).sarif" 2>/dev/null || true
         done
 
-        # Merge SARIF files if multiple
-        FIRST_SARIF=$(ls "$REPORTS_DIR"/*.sarif 2>/dev/null | head -1)
+        jq -s '{findings: .}' /tmp/all-findings.jsonl > "$REPORTS_DIR/lint.json" 2>/dev/null || echo '{"findings":[]}' > "$REPORTS_DIR/lint.json"
+
+        # Merge per-bundle SARIF files into the canonical aggregate path.
+        FIRST_SARIF=$(find "$REPORTS_DIR" -maxdepth 1 -type f -name 'lint-*.sarif' | sort | head -1 || true)
         if [ -n "$FIRST_SARIF" ]; then
           cp "$FIRST_SARIF" "$REPORTS_DIR/lint.sarif"
+        else
+          printf '%s\n' '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"Assay","informationUri":"https://github.com/Rul1an/assay"}},"results":[]}]}' > "$REPORTS_DIR/lint.sarif"
         fi
 
         echo "sarif_path=$REPORTS_DIR/lint.sarif" >> $GITHUB_OUTPUT
 
         ERRORS=$TOTAL_ERRORS
         WARNS=$TOTAL_WARNS
+        INFOS=$TOTAL_INFOS
 
         echo "findings_error=$ERRORS" >> $GITHUB_OUTPUT
         echo "findings_warn=$WARNS" >> $GITHUB_OUTPUT
+        echo "findings_info=$INFOS" >> $GITHUB_OUTPUT
 
-        # Apply fail_on threshold
+        SHOULD_FAIL=false
+        FAILURE_REASON=""
+        case "$FAIL_ON" in
+          error) FAILURE_POLICY="bundle verification failure or error-level findings" ;;
+          warn) FAILURE_POLICY="bundle verification failure, error-level findings, or warning-level findings" ;;
+          info) FAILURE_POLICY="bundle verification failure or any finding" ;;
+          none) FAILURE_POLICY="bundle verification failure only (finding threshold disabled)" ;;
+        esac
+
+        if [ "$FAILED" -gt 0 ]; then
+          SHOULD_FAIL=true
+          FAILURE_REASON="bundle verification failure"
+        fi
+
+        # Record fail_on threshold for the later finalizer step. This keeps
+        # reports, PR comments, and artifacts available on failing runs.
         case "$FAIL_ON" in
           error)
             if [ "$ERRORS" -gt 0 ]; then
-              echo "::error::$ERRORS error-level findings exceed threshold"
-              exit 1
+              SHOULD_FAIL=true
+              FAILURE_REASON="$ERRORS error-level findings exceed threshold"
             fi
             ;;
           warn)
             if [ "$ERRORS" -gt 0 ] || [ "$WARNS" -gt 0 ]; then
-              echo "::error::$ERRORS errors, $WARNS warnings exceed threshold"
-              exit 1
+              SHOULD_FAIL=true
+              FAILURE_REASON="$ERRORS errors, $WARNS warnings exceed threshold"
             fi
             ;;
           info)
-            # Fail on any finding (info not yet implemented, treat as warn)
-            if [ "$ERRORS" -gt 0 ] || [ "$WARNS" -gt 0 ]; then
-              exit 1
+            if [ "$ERRORS" -gt 0 ] || [ "$WARNS" -gt 0 ] || [ "$INFOS" -gt 0 ]; then
+              SHOULD_FAIL=true
+              FAILURE_REASON="$ERRORS errors, $WARNS warnings, $INFOS info findings exceed threshold"
             fi
             ;;
           none)
@@ -324,7 +405,10 @@ runs:
             ;;
         esac
 
-        echo "diff_summary=Verified: $VERIFIED, Errors: $ERRORS, Warnings: $WARNS" >> $GITHUB_OUTPUT
+        echo "should_fail=$SHOULD_FAIL" >> $GITHUB_OUTPUT
+        echo "failure_reason=$FAILURE_REASON" >> $GITHUB_OUTPUT
+        echo "failure_policy=$FAILURE_POLICY" >> $GITHUB_OUTPUT
+        echo "diff_summary=Verified: $VERIFIED, Errors: $ERRORS, Warnings: $WARNS, Info: $INFOS" >> $GITHUB_OUTPUT
 
     # =========================================================================
     # E3: SARIF Upload
@@ -336,17 +420,24 @@ runs:
       shell: bash
       env:
         USER_CATEGORY: ${{ inputs.category }}
+        RAW_WORKFLOW: ${{ github.workflow }}
+        RAW_JOB: ${{ github.job }}
       run: |
         if [ -n "$USER_CATEGORY" ]; then
-          echo "category=$USER_CATEGORY" >> $GITHUB_OUTPUT
+          RAW_CATEGORY="$USER_CATEGORY"
         else
           # Auto-generate unique category per job
-          CATEGORY="assay-${{ github.workflow }}-${{ github.job }}"
-          echo "category=$CATEGORY" >> $GITHUB_OUTPUT
+          RAW_CATEGORY="assay-${RAW_WORKFLOW}-${RAW_JOB}"
         fi
 
+        CATEGORY=$(printf '%s' "$RAW_CATEGORY" | sed 's/[^A-Za-z0-9._-]/-/g; s/^-*//; s/-*$//')
+        if [ -z "$CATEGORY" ]; then
+          CATEGORY="assay"
+        fi
+        echo "category=$CATEGORY" >> $GITHUB_OUTPUT
+
     - name: Upload SARIF to GitHub Security
-      if: inputs.sarif == 'true' && steps.discover.outputs.found == 'true'
+      if: always() && inputs.sarif == 'true' && steps.discover.outputs.found == 'true'
       uses: github/codeql-action/upload-sarif@v4
       continue-on-error: true
       with:
@@ -354,7 +445,190 @@ runs:
         category: ${{ steps.sarif-category.outputs.category }}
 
     # =========================================================================
-    # E4: PR Feedback - Job Summary + PR Comment
+    # E4: Baseline signal - lightweight v2 new-finding delta
+    # =========================================================================
+
+    - name: Resolve baseline key
+      id: baseline-key
+      if: steps.discover.outputs.found == 'true'
+      shell: bash
+      env:
+        USER_BASELINE_KEY: ${{ inputs.baseline_key }}
+      run: |
+        set -euo pipefail
+
+        if [ -n "$USER_BASELINE_KEY" ]; then
+          KEY="$USER_BASELINE_KEY"
+        else
+          KEY="${GITHUB_REPOSITORY:-assay}"
+        fi
+
+        # Keep cache keys readable while avoiding separators with special meaning.
+        SAFE_KEY=$(printf '%s' "$KEY" | tr '/: ' '---')
+        echo "key=$SAFE_KEY" >> "$GITHUB_OUTPUT"
+
+    - name: Restore baseline from cache
+      id: baseline-restore
+      if: steps.discover.outputs.found == 'true' && inputs.baseline_dir == ''
+      uses: actions/cache/restore@v5
+      continue-on-error: true
+      with:
+        path: .assay-baseline/
+        key: assay-baseline-${{ steps.baseline-key.outputs.key }}-${{ github.base_ref || 'main' }}-${{ github.sha }}
+        restore-keys: |
+          assay-baseline-${{ steps.baseline-key.outputs.key }}-${{ github.base_ref || 'main' }}-
+
+    - name: Compare with baseline
+      id: baseline-diff
+      if: steps.discover.outputs.found == 'true'
+      shell: bash
+      env:
+        BASELINE_DIR_INPUT: ${{ inputs.baseline_dir }}
+        BASE_REF: ${{ github.base_ref || 'main' }}
+        REPORTS_DIR: ${{ steps.process.outputs.reports_dir }}
+      run: |
+        set -euo pipefail
+
+        mkdir -p "$REPORTS_DIR"
+        FINGERPRINT_VERSION="v1-severity-rule-location"
+
+        write_no_baseline() {
+          jq -n \
+            --arg fingerprint_version "$FINGERPRINT_VERSION" \
+            --argjson baseline_found false \
+            --arg summary "No baseline yet" \
+            --argjson new_findings 0 \
+            --argjson new_error_findings 0 \
+            --argjson new_warning_findings 0 \
+            --argjson new_info_findings 0 \
+            '{baseline_found: $baseline_found, fingerprint_version: $fingerprint_version, summary: $summary, new_findings: $new_findings, new_error_findings: $new_error_findings, new_warning_findings: $new_warning_findings, new_info_findings: $new_info_findings}' \
+            > "$REPORTS_DIR/baseline-diff.json"
+          echo "baseline_found=false" >> "$GITHUB_OUTPUT"
+          echo "new_findings=0" >> "$GITHUB_OUTPUT"
+          echo "new_error_findings=0" >> "$GITHUB_OUTPUT"
+          echo "new_warning_findings=0" >> "$GITHUB_OUTPUT"
+          echo "new_info_findings=0" >> "$GITHUB_OUTPUT"
+          echo "summary=No baseline yet" >> "$GITHUB_OUTPUT"
+        }
+
+        CURRENT="$REPORTS_DIR/lint.json"
+        if [ ! -f "$CURRENT" ]; then
+          write_no_baseline
+          exit 0
+        fi
+
+        BASELINE_SOURCE=""
+        if [ -n "$BASELINE_DIR_INPUT" ]; then
+          BASELINE_SOURCE="$BASELINE_DIR_INPUT"
+        elif [ -f ".assay-baseline/lint.json" ]; then
+          BASELINE_SOURCE=".assay-baseline"
+        fi
+
+        if [ -z "$BASELINE_SOURCE" ] || [ ! -f "$BASELINE_SOURCE/lint.json" ]; then
+          write_no_baseline
+          exit 0
+        fi
+
+        if [ -n "$BASELINE_DIR_INPUT" ]; then
+          BASELINE_LABEL="custom baseline_dir"
+        else
+          BASELINE_LABEL="${BASE_REF}"
+        fi
+
+        finding_keys() {
+          local file="$1"
+          jq -r '
+            def text($v): if $v == null then "" else ($v | tostring) end;
+            def location_value:
+              if (.location? | type) == "object" then
+                (.location.path // .location.file // .location.uri // .location.target // .location)
+              else
+                .location?
+              end;
+            def location_line:
+              if (.location? | type) == "object" then
+                (.location.line // .location.start_line // .location.startLine // .location.region.startLine?)
+              else
+                null
+              end;
+            def location_column:
+              if (.location? | type) == "object" then
+                (.location.column // .location.start_column // .location.startColumn // .location.region.startColumn?)
+              else
+                null
+              end;
+            def location_canonical:
+              text(
+                location_value
+                // .path
+                // .file
+                // .uri
+                // .target
+                // .physicalLocation.artifactLocation.uri?
+                // .locations[0].physicalLocation.artifactLocation.uri?
+              ) as $path
+              | text(
+                location_line
+                // .line
+                // .start_line
+                // .startLine
+                // .region.startLine?
+                // .physicalLocation.region.startLine?
+                // .locations[0].physicalLocation.region.startLine?
+              ) as $line
+              | text(
+                location_column
+                // .column
+                // .start_column
+                // .startColumn
+                // .region.startColumn?
+                // .physicalLocation.region.startColumn?
+                // .locations[0].physicalLocation.region.startColumn?
+              ) as $column
+              | if $path == "" then ""
+                elif $line != "" and $column != "" then "\($path):\($line):\($column)"
+                elif $line != "" then "\($path):\($line)"
+                else $path
+                end;
+            (.findings // [])[] |
+            [
+              (.severity // ""),
+              (.rule_id // .ruleId // .rule.id? // .rule.name? // .id // ""),
+              location_canonical
+            ] | @tsv
+          ' "$file" | sort -u
+        }
+
+        finding_keys "$BASELINE_SOURCE/lint.json" > /tmp/assay-baseline-findings.keys
+        finding_keys "$CURRENT" > /tmp/assay-current-findings.keys
+        comm -13 /tmp/assay-baseline-findings.keys /tmp/assay-current-findings.keys > /tmp/assay-new-findings.keys
+
+        NEW_FINDINGS=$(wc -l < /tmp/assay-new-findings.keys | tr -d ' ')
+        NEW_ERRORS=$(awk -F '\t' '$1 == "error" { count++ } END { print count + 0 }' /tmp/assay-new-findings.keys)
+        NEW_WARNINGS=$(awk -F '\t' '$1 == "warning" { count++ } END { print count + 0 }' /tmp/assay-new-findings.keys)
+        NEW_INFOS=$(awk -F '\t' '$1 == "info" { count++ } END { print count + 0 }' /tmp/assay-new-findings.keys)
+        SUMMARY="+${NEW_ERRORS} new error findings, +${NEW_WARNINGS} new warning findings vs ${BASELINE_LABEL} baseline"
+
+        jq -n \
+          --arg fingerprint_version "$FINGERPRINT_VERSION" \
+          --argjson baseline_found true \
+          --arg summary "$SUMMARY" \
+          --argjson new_findings "$NEW_FINDINGS" \
+          --argjson new_error_findings "$NEW_ERRORS" \
+          --argjson new_warning_findings "$NEW_WARNINGS" \
+          --argjson new_info_findings "$NEW_INFOS" \
+          '{baseline_found: $baseline_found, fingerprint_version: $fingerprint_version, summary: $summary, new_findings: $new_findings, new_error_findings: $new_error_findings, new_warning_findings: $new_warning_findings, new_info_findings: $new_info_findings}' \
+          > "$REPORTS_DIR/baseline-diff.json"
+
+        echo "baseline_found=true" >> "$GITHUB_OUTPUT"
+        echo "new_findings=$NEW_FINDINGS" >> "$GITHUB_OUTPUT"
+        echo "new_error_findings=$NEW_ERRORS" >> "$GITHUB_OUTPUT"
+        echo "new_warning_findings=$NEW_WARNINGS" >> "$GITHUB_OUTPUT"
+        echo "new_info_findings=$NEW_INFOS" >> "$GITHUB_OUTPUT"
+        echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
+
+    # =========================================================================
+    # E5: PR Feedback - Job Summary + PR Comment
     # =========================================================================
 
     - name: Write Job Summary
@@ -368,7 +642,13 @@ runs:
         FAILED_COUNT: ${{ steps.process.outputs.failed_count }}
         ERRORS: ${{ steps.process.outputs.findings_error }}
         WARNS: ${{ steps.process.outputs.findings_warn }}
+        INFOS: ${{ steps.process.outputs.findings_info }}
+        SHOULD_FAIL: ${{ steps.process.outputs.should_fail }}
+        FAILURE_POLICY: ${{ steps.process.outputs.failure_policy }}
+        FAILURE_REASON: ${{ steps.process.outputs.failure_reason }}
+        BASELINE_SUMMARY: ${{ steps.baseline-diff.outputs.summary }}
       run: |
+        ARTIFACT_NAME="assay-reports-${GITHUB_RUN_ID}"
         {
           echo "## Assay Evidence Report"
           echo ""
@@ -385,10 +665,16 @@ runs:
             echo "Bundles will be created in \`.assay/evidence/\`"
           else
             # Status badge
-            if [ "$VERIFIED" = "true" ] && [ "${ERRORS:-0}" = "0" ]; then
-              echo "**Status:** Passed"
+            if [ "$SHOULD_FAIL" = "true" ]; then
+              echo "**Status:** Failed ❌"
             else
-              echo "**Status:** Failed"
+              echo "**Status:** Passed ✅"
+            fi
+            echo ""
+            echo "What fails this PR: ${FAILURE_POLICY:-bundle verification failure or error-level findings}."
+            if [ "$SHOULD_FAIL" = "true" ] && [ -n "${FAILURE_REASON:-}" ]; then
+              echo ""
+              echo "Current failure reason: ${FAILURE_REASON}."
             fi
             echo ""
 
@@ -401,25 +687,35 @@ runs:
             fi
             echo "| Errors | ${ERRORS:-0} |"
             echo "| Warnings | ${WARNS:-0} |"
+            if [ "${INFOS:-0}" -gt 0 ]; then
+              echo "| Info | ${INFOS} |"
+            fi
+            if [ -n "${BASELINE_SUMMARY:-}" ]; then
+              echo "| Baseline delta | ${BASELINE_SUMMARY} |"
+            fi
+            echo "| Reports artifact | \`$ARTIFACT_NAME\` |"
 
             # Show findings summary if any
-            if [ "${ERRORS:-0}" -gt 0 ] || [ "${WARNS:-0}" -gt 0 ]; then
+            if [ "${ERRORS:-0}" -gt 0 ] || [ "${WARNS:-0}" -gt 0 ] || [ "${INFOS:-0}" -gt 0 ]; then
               echo ""
               echo "### Findings"
               echo ""
-              echo "Review findings in the **Security** tab or download the SARIF artifact."
+              echo "Review findings in the **Security** tab or download \`$ARTIFACT_NAME\`."
+            else
+              echo ""
+              echo "Review the SARIF upload in the **Security** tab or download \`$ARTIFACT_NAME\`."
             fi
           fi
 
           echo ""
           echo "---"
-          echo "[Assay Documentation](https://github.com/Rul1an/assay) | [Report Issue](https://github.com/Rul1an/assay/issues)"
+          echo "[Assay CLI](https://github.com/Rul1an/assay) | [Evidence Receipts in Action](https://github.com/Rul1an/assay/blob/main/docs/notes/EVIDENCE-RECEIPTS-IN-ACTION.md) | [Report Issue](https://github.com/Rul1an/assay-action/issues)"
         } >> $GITHUB_STEP_SUMMARY
 
     - name: Find existing PR comment
       id: find-comment
-      if: github.event_name == 'pull_request' && inputs.comment_diff == 'true' && steps.discover.outputs.found == 'true'
-      uses: peter-evans/find-comment@v3
+      if: always() && github.event_name == 'pull_request' && inputs.comment_diff == 'true' && steps.discover.outputs.found == 'true'
+      uses: peter-evans/find-comment@v4
       continue-on-error: true
       with:
         issue-number: ${{ github.event.pull_request.number }}
@@ -427,8 +723,8 @@ runs:
         body-includes: '<!-- assay-report -->'
 
     - name: Post or update PR comment
-      if: github.event_name == 'pull_request' && inputs.comment_diff == 'true' && steps.discover.outputs.found == 'true' && (steps.process.outputs.findings_error != '0' || steps.process.outputs.findings_warn != '0')
-      uses: peter-evans/create-or-update-comment@v4
+      if: always() && github.event_name == 'pull_request' && inputs.comment_diff == 'true' && steps.discover.outputs.found == 'true' && (steps.process.outputs.findings_error != '0' || steps.process.outputs.findings_warn != '0' || steps.process.outputs.findings_info != '0' || steps.process.outputs.failed_count != '0')
+      uses: peter-evans/create-or-update-comment@v5
       continue-on-error: true
       with:
         comment-id: ${{ steps.find-comment.outputs.comment-id }}
@@ -443,52 +739,50 @@ runs:
           | Bundles | ${{ steps.discover.outputs.count }} |
           | Errors | ${{ steps.process.outputs.findings_error }} |
           | Warnings | ${{ steps.process.outputs.findings_warn }} |
+          | Info | ${{ steps.process.outputs.findings_info }} |
+          | Baseline delta | ${{ steps.baseline-diff.outputs.summary || 'No baseline yet' }} |
+          | Reports artifact | `assay-reports-${{ github.run_id }}` |
 
-          View details in the [Security tab](${{ github.server_url }}/${{ github.repository }}/security/code-scanning) or [Job Summary](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+          Failure policy: ${{ steps.process.outputs.failure_policy || 'bundle verification failure or error-level findings' }}.
+
+          View details in the [Security tab](${{ github.server_url }}/${{ github.repository }}/security/code-scanning), [Job Summary](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}), or the `assay-reports-${{ github.run_id }}` artifact.
 
     # =========================================================================
-    # E5: Baseline & Artifacts
+    # E6: Baseline cache & artifacts
     # =========================================================================
 
-    - name: Restore baseline from cache
-      id: baseline-restore
-      if: inputs.baseline_key != '' && steps.discover.outputs.found == 'true'
-      uses: actions/cache/restore@v4
+    - name: Prepare baseline cache
+      if: inputs.write_baseline == 'true' && github.ref == 'refs/heads/main' && steps.discover.outputs.found == 'true' && steps.process.outputs.verified == 'true' && steps.process.outputs.should_fail != 'true'
+      shell: bash
+      env:
+        REPORTS_DIR: ${{ steps.process.outputs.reports_dir }}
+      run: |
+        set -euo pipefail
+        mkdir -p .assay-baseline
+        cp "$REPORTS_DIR/lint.json" .assay-baseline/lint.json
+        cp "$REPORTS_DIR/lint.sarif" .assay-baseline/lint.sarif 2>/dev/null || true
+
+    - name: Save baseline to cache
+      if: inputs.write_baseline == 'true' && github.ref == 'refs/heads/main' && steps.discover.outputs.found == 'true' && steps.process.outputs.verified == 'true' && steps.process.outputs.should_fail != 'true'
+      uses: actions/cache/save@v5
       continue-on-error: true
       with:
         path: .assay-baseline/
-        key: assay-baseline-${{ inputs.baseline_key }}-${{ github.base_ref || 'main' }}
-        restore-keys: |
-          assay-baseline-${{ inputs.baseline_key }}-
-
-    - name: Compare with baseline
-      id: baseline-diff
-      if: steps.baseline-restore.outputs.cache-hit == 'true' && steps.discover.outputs.found == 'true'
-      shell: bash
-      run: |
-        # Baseline comparison placeholder
-        # TODO: Implement assay evidence diff command
-        if [ -d ".assay-baseline" ]; then
-          echo "Baseline found, comparison available in future version"
-          echo "baseline_found=true" >> $GITHUB_OUTPUT
-        else
-          echo "baseline_found=false" >> $GITHUB_OUTPUT
-        fi
-
-    - name: Save baseline to cache
-      if: inputs.write_baseline == 'true' && github.ref == 'refs/heads/main' && steps.discover.outputs.found == 'true' && steps.process.outputs.verified == 'true'
-      uses: actions/cache/save@v4
-      continue-on-error: true
-      with:
-        path: ${{ steps.process.outputs.reports_dir }}
-        key: assay-baseline-${{ inputs.baseline_key || 'default' }}-main-${{ github.sha }}
+        key: assay-baseline-${{ steps.baseline-key.outputs.key }}-main-${{ github.sha }}
 
     - name: Upload reports artifact
-      if: steps.discover.outputs.found == 'true'
-      uses: actions/upload-artifact@v4
+      if: always() && steps.discover.outputs.found == 'true'
+      uses: actions/upload-artifact@v7
       continue-on-error: true
       with:
         name: assay-reports-${{ github.run_id }}
         path: ${{ steps.process.outputs.reports_dir }}
         retention-days: 30
         include-hidden-files: true
+
+    - name: Fail on Assay threshold
+      if: steps.discover.outputs.found == 'true' && steps.process.outputs.should_fail == 'true'
+      shell: bash
+      run: |
+        echo "::error::${{ steps.process.outputs.failure_reason }}"
+        exit 1
