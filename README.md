@@ -14,16 +14,13 @@ By default, a PR fails only when bundle verification fails or Assay finds
 error-level evidence findings.
 
 Use this if you run tests against agents that call Model Context Protocol (MCP)
-tools, HTTP APIs, or function-calling interfaces and want a CI-side record of
-the observed tool and resource boundary.
+tools, HTTP APIs, or function-calling interfaces and want CodeQL-like review for
+the evidence captured while your tests ran.
 
-Think of it as CodeQL-like review for observed agent behavior during test runs:
-CodeQL reviews source code; Assay reviews the evidence captured while your tests
-ran.
-
-Use it alongside eval tools such as Promptfoo or similar CI eval tooling. They
-help score output quality; Assay preserves and reviews the tested capability
-boundary.
+Assay's own repository tests this action shape in CI with repo-local evidence
+bundles. Use it alongside eval tools such as Promptfoo or similar CI eval
+tooling: they help score output quality; Assay preserves and reviews the tested
+capability boundary.
 
 ## From Scratch
 
@@ -264,7 +261,7 @@ Example output:
 ### Tool calls
   + shell.exec
 
-### Policy verdicts (deny) [deny]
+### Policy verdicts (deny)
   + filesystem-sensitive:/etc/hosts
 
 Summary: +3 new, -0 removed across capability dimensions.
