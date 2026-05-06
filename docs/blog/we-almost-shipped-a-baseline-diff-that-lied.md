@@ -128,4 +128,4 @@ If you're shipping a diff feature in any tool, I'd encourage you to do the categ
 
 ---
 
-*The fingerprint design landed in [`assay-action` v2.1](https://github.com/Rul1an/assay-action/releases/tag/v2). The simulation harness is at [`scripts/sim_fingerprint.sh`](https://github.com/Rul1an/assay-action/blob/main/scripts/sim_fingerprint.sh) — it's 50 cases that run on every PR and weekly cron in Action Sanity. If you find a category I missed, please open an issue.*
+*The fingerprint design landed on the [`assay-action` v2 line](https://github.com/Rul1an/assay-action/releases/tag/v2). The simulation harness is at [`scripts/sim_fingerprint.sh`](https://github.com/Rul1an/assay-action/blob/main/scripts/sim_fingerprint.sh) — it's 50 cases that run on every PR and weekly cron in Action Sanity. If you find a category I missed, please open an issue.*

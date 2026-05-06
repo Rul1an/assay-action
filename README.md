@@ -408,7 +408,7 @@ Task-shaped reference docs. Each answers a single search-intent question with th
 - [Evidence Receipts from Promptfoo JSONL](docs/use-cases/evidence-receipts-from-promptfoo-jsonl.md)
 - [OpenFeature EvaluationDetails to CI Review Artifact](docs/use-cases/openfeature-evaluationdetails-to-ci-review-artifact.md)
 
-For lessons from building these, see [the engineering blog](docs/blog/).
+For lessons from building these, see [the engineering blog](docs/blog/README.md).
 
 ## Related
 

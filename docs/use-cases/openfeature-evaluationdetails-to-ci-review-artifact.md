@@ -30,11 +30,11 @@ The receipt records *one flag evaluation, as projected by a named reducer, from 
 
 ## One workflow
 
-The receipt is produced by a reducer that reads OpenFeature's `evaluation_details.jsonl` and emits one Assay event per selected evaluation:
+The receipt is produced by a reducer that reads an OpenFeature `EvaluationDetails` JSONL file and emits one Assay event per selected evaluation:
 
 ```bash
-# Your test or agent run produces evaluation_details.jsonl
-# (one line per flag evaluation, OpenFeature's standard schema)
+# Your test or agent run produces candidate.openfeature-details.jsonl
+# (the filename is arbitrary; one JSON object per flag evaluation)
 
 assay evidence import openfeature-details \
   --input candidate.openfeature-details.jsonl \

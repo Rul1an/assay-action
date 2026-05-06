@@ -90,6 +90,10 @@ A receipt bundle for one assertion-component result:
 }
 ```
 
+The CloudEvents `type` and `data.schema` strings are intentionally different:
+`type` is the Assay event-family id, while `data.schema` is the receipt JSON
+Schema id from Assay's schema registry.
+
 Five fields together establish the chain of custody:
 
 | Field | What it tells a future reader |
