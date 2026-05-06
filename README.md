@@ -13,9 +13,9 @@ SARIF, and an uploaded reports artifact.
 By default, a PR fails only when bundle verification fails or Assay finds
 error-level evidence findings.
 
-Use this if you run tests against agents that call MCP tools, HTTP APIs, or
-function-calling interfaces and want a CI-side record of the observed tool and
-resource boundary.
+Use this if you run tests against agents that call Model Context Protocol (MCP)
+tools, HTTP APIs, or function-calling interfaces and want a CI-side record of
+the observed tool and resource boundary.
 
 Think of it as CodeQL-like review for observed agent behavior during test runs:
 CodeQL reviews source code; Assay reviews the evidence captured while your tests
@@ -27,8 +27,9 @@ boundary.
 
 ## From Scratch
 
-Start with a small policy file. Replace the tool names and path pattern with
-the tools and workspace your agent is expected to use.
+Start with a small policy file. The example uses MCP filesystem-style tool names;
+replace the tool names and path pattern with the tools and workspace your agent
+is expected to use.
 
 ```yaml
 # policy.yaml
@@ -119,21 +120,21 @@ evidence, even on red.
 ```markdown
 ## Assay Evidence Report
 
-Status: Passed ✅
+**Status:** Passed ✅
 
 What fails this PR: bundle verification failure or error-level findings.
 
 | Metric | Value |
-| --- | --- |
+|--------|-------|
 | Bundles processed | 3 |
 | Verified | 3 |
 | Errors | 0 |
 | Warnings | 1 |
 | Baseline delta | +0 new error findings, +1 new warning findings vs main baseline |
 | Finding diff | +1 added, -0 removed, 2 unchanged vs main baseline |
-| Reports artifact | assay-reports-123456789 |
+| Reports artifact | `assay-reports-123456789` |
 
-Review the SARIF upload in the Security tab, or download the reports artifact.
+Review the SARIF upload in the **Security** tab or download `assay-reports-123456789`.
 ```
 
 ## Recommended Setup
@@ -225,8 +226,8 @@ want the same evidence boundary to show up consistently in PRs.
 
 For audit and compliance review, Assay bundles are content-addressed and
 verifiable review artifacts. They are useful evidence inputs for SOC 2,
-ISO 42001, or EU AI Act review processes, without claiming that the action makes
-you compliant.
+ISO/IEC 42001, or EU AI Act review processes, without claiming that the action
+makes you compliant.
 
 v2 reviews the run. The planned diff mode will review what this PR changed about
 the agent capability surface.
