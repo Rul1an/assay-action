@@ -13,6 +13,64 @@ SARIF, and an uploaded reports artifact.
 By default, a PR fails only when bundle verification fails or Assay finds
 error-level evidence findings.
 
+Use this if you run tests against agents that call MCP tools, HTTP APIs, or
+function-calling interfaces and want a CI-side record of the observed tool and
+resource boundary.
+
+Think of it as CodeQL-like review for observed agent behavior during test runs:
+CodeQL reviews source code; Assay reviews the evidence captured while your tests
+ran.
+
+Use it alongside eval tools such as Promptfoo or similar CI eval tooling. They
+help score output quality; Assay preserves and reviews the tested capability
+boundary.
+
+## From Scratch
+
+Start with a small policy file. Replace the tool names and path pattern with
+the tools and workspace your agent is expected to use.
+
+```yaml
+# policy.yaml
+version: "2.0"
+name: "agent-ci-starter"
+
+tools:
+  allow:
+    - "read_file"
+    - "list_dir"
+  deny:
+    - "exec"
+    - "shell"
+    - "write_file"
+
+schemas:
+  read_file:
+    type: object
+    additionalProperties: false
+    properties:
+      path:
+        type: string
+        # GitHub-hosted runners use /home/runner/work/<repo>/<repo>.
+        pattern: "^(/home/runner/work/|/tmp/).*"
+        minLength: 1
+    required: ["path"]
+
+  list_dir:
+    type: object
+    additionalProperties: false
+    properties:
+      path:
+        type: string
+        pattern: "^(/home/runner/work/|/tmp/).*"
+        minLength: 1
+    required: ["path"]
+```
+
+Then paste the workflow below. The action installs Assay, runs your test command
+under `assay run`, verifies the generated bundles, and writes the GitHub review
+surfaces.
+
 ## From Zero To Evidence In CI
 
 Use this when you want the whole path in one workflow: install Assay, run a test
@@ -55,6 +113,28 @@ written.
 
 Ordering: install -> run -> upload artifacts -> fail. Reviewers always have the
 evidence, even on red.
+
+## Job Summary Preview
+
+```markdown
+## Assay Evidence Report
+
+Status: Passed ✅
+
+What fails this PR: bundle verification failure or error-level findings.
+
+| Metric | Value |
+| --- | --- |
+| Bundles processed | 3 |
+| Verified | 3 |
+| Errors | 0 |
+| Warnings | 1 |
+| Baseline delta | +0 new error findings, +1 new warning findings vs main baseline |
+| Finding diff | +1 added, -0 removed, 2 unchanged vs main baseline |
+| Reports artifact | assay-reports-123456789 |
+
+Review the SARIF upload in the Security tab, or download the reports artifact.
+```
 
 ## Recommended Setup
 
@@ -134,28 +214,6 @@ The reports artifact is intentionally named and visible. If a reviewer asks
 When bundles are found, the action uploads the reports artifact even when the
 final Assay threshold fails.
 
-## Job Summary Preview
-
-```markdown
-## Assay Evidence Report
-
-Status: Passed ✅
-
-What fails this PR: bundle verification failure or error-level findings.
-
-| Metric | Value |
-| --- | --- |
-| Bundles processed | 3 |
-| Verified | 3 |
-| Errors | 0 |
-| Warnings | 1 |
-| Baseline delta | +0 new error findings, +1 new warning findings vs main baseline |
-| Finding diff | +1 added, -0 removed, 2 unchanged vs main baseline |
-| Reports artifact | assay-reports-123456789 |
-
-Review the SARIF upload in the Security tab, or download the reports artifact.
-```
-
 ## Why Use The Action?
 
 You can script `assay evidence verify`, `assay evidence lint`, SARIF upload, job
@@ -164,6 +222,11 @@ that plumbing into one stable GitHub-native review step.
 
 Use the CLI for evidence capture and local debugging. Use this action when you
 want the same evidence boundary to show up consistently in PRs.
+
+For audit and compliance review, Assay bundles are content-addressed and
+verifiable review artifacts. They are useful evidence inputs for SOC 2,
+ISO 42001, or EU AI Act review processes, without claiming that the action makes
+you compliant.
 
 v2 reviews the run. The planned diff mode will review what this PR changed about
 the agent capability surface.
