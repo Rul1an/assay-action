@@ -163,11 +163,14 @@ written earlier, would let staleness hide as currentness. Reviewers who see
 "vs main@<current-head>" reasonably assume the baseline reflects current main;
 they should never have to guess.
 
-The action computes "N commits behind" at diff time using
-`git rev-list base_sha..HEAD --count` against the base ref, and surfaces `N` in
-the PR-comment `<details>` section. If the action cannot resolve `base_sha`, for
-example because a force-push removed it, it surfaces "baseline run SHA no longer
-reachable" and treats this as integrity-error skew per invariant 4.
+The action computes "N commits behind" at diff time using the fetched head of
+the base ref, for example `origin/main`:
+`git rev-list base_sha..origin/main --count`. The workflow must fetch that ref
+with enough history to resolve both `base_sha` and the current base-ref head,
+then surface `N` in the PR-comment `<details>` section. If the action cannot
+resolve `base_sha`, for example because a force-push removed it, it surfaces
+"baseline run SHA no longer reachable" and treats this as integrity-error skew
+per invariant 4.
 
 ## Consequences
 
