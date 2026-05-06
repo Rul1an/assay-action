@@ -400,6 +400,16 @@ No. MCP policy enforcement is one sharp wedge, but the action only needs Assay
 evidence bundles. If your test run can produce a bundle, the review step is the
 same.
 
+## Use Cases
+
+Task-shaped reference docs. Each answers a single search-intent question with the same five-step pattern: problem, one workflow, canonical artifact, boundary, what it does not prove.
+
+- [MCP Tool Call Audit Trail in GitHub Actions](docs/use-cases/mcp-tool-call-audit-trail-in-github-actions.md)
+- [Evidence Receipts from Promptfoo JSONL](docs/use-cases/evidence-receipts-from-promptfoo-jsonl.md)
+- [OpenFeature EvaluationDetails to CI Review Artifact](docs/use-cases/openfeature-evaluationdetails-to-ci-review-artifact.md)
+
+For lessons from building these, see [the engineering blog](docs/blog/).
+
 ## Related
 
 - [Assay CLI](https://github.com/Rul1an/assay)
