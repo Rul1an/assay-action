@@ -83,8 +83,8 @@ of the action run:
 - The action did not trigger its `should_fail` path (`should_fail == false`).
 
 A verified bundle from a run that exceeded the `fail_on` threshold does not
-write a baseline. Otherwise a single bad main-push poisons every subsequent PR
-comment, and the failure mode is invisible to the next reviewer.
+write a baseline. Otherwise a single bad base-branch push poisons every
+subsequent PR comment, and the failure mode is invisible to the next reviewer.
 
 ## Invariant 2 - Bundle Digest Chain Of Custody
 
@@ -96,7 +96,7 @@ from these specific bundles." A reviewer who suspects baseline drift can:
 
 1. Open the cached `surface.json`.
 2. Read `source_bundles[].bundle_id`.
-3. Re-fetch the original bundle from the main-branch run logs or artifact.
+3. Re-fetch the original bundle from the base-branch run logs or artifact.
 4. Re-verify the bundle to confirm the digest still matches.
 
 If a tampered bundle wrote the baseline, this trail makes the tampering
@@ -118,7 +118,7 @@ When `extractor_version` changes:
 
 - All previously cached baselines for the affected `baseline_key` become
   inaccessible.
-- The next main-run rewrites the baseline with the new extractor.
+- The next base-branch run rewrites the baseline with the new extractor.
 - PR runs in the gap see "no baseline yet" rather than a stale baseline.
 
 This is the correct trade-off. A short window with no diff is preferable to an
@@ -134,7 +134,7 @@ At diff time, the action loads the cached baseline and compares the baseline's
 
   > **Capability diff unavailable.** Baseline was captured with extractor
   > `capability-surface-v1`, current run uses `capability-surface-v2`. Rebuild
-  > the baseline by pushing to `main`.
+  > the baseline by pushing to `${base_ref}`.
 
 - The job summary surfaces the same line.
 - The action does not fail; it degrades gracefully.
@@ -148,35 +148,36 @@ cache layer, while invariant 4 catches residual cases, such as a baseline
 written by a self-hosted runner on an older action version and read by a hosted
 runner on a newer one.
 
-## Invariant 5 - `base_sha` Identifies The Baseline Run, Not Current Main
+## Invariant 5 - `base_sha` Identifies The Baseline Run, Not Current Base Ref
 
-`base_sha` is the commit SHA of the main-branch run that wrote this cached
-baseline. It is not the current head of `main` at PR time.
+`base_sha` is the commit SHA of the base-branch run that wrote this cached
+baseline. It is not the current head of `base_ref` at PR time.
 
 A baseline written three commits ago is stale-but-valid. The comment must
 surface that staleness plainly:
 
-> Baseline run: `main@a1b2c3d` (3 commits behind current main)
+> Baseline run: `${base_ref}@a1b2c3d` (3 commits behind current `${base_ref}`)
 
-Conflating these, or displaying the current-main SHA when the baseline was
+Conflating these, or displaying the current base-ref SHA when the baseline was
 written earlier, would let staleness hide as currentness. Reviewers who see
-"vs main@<current-head>" reasonably assume the baseline reflects current main;
-they should never have to guess.
+"vs ${base_ref}@<current-head>" reasonably assume the baseline reflects the
+current base ref; they should never have to guess.
 
 The action computes "N commits behind" at diff time using the fetched head of
-the base ref, for example `origin/main`:
-`git rev-list base_sha..origin/main --count`. The workflow must fetch that ref
-with enough history to resolve both `base_sha` and the current base-ref head,
-then surface `N` in the PR-comment `<details>` section. If the action cannot
-resolve `base_sha`, for example because a force-push removed it, it surfaces
-"baseline run SHA no longer reachable" and treats this as integrity-error skew
-per invariant 4.
+the base ref, for example:
+`git rev-list base_sha..origin/${base_ref} --count`.
+
+The action performs this fetch internally before resolving `base_sha`. Users do
+not need to set `fetch-depth` on their `actions/checkout` step. If the fetch
+fails, or if the action cannot resolve `base_sha` after fetching, for example
+because a force-push removed it, the action surfaces "baseline run SHA no longer
+reachable" and treats this as integrity-error skew per invariant 4.
 
 ## Consequences
 
 ### Enforced
 
-- A red main-run does not poison subsequent PR diffs.
+- A red base-branch run does not poison subsequent PR diffs.
 - An extractor change that alters surface semantics does not silently produce
   wrong diffs.
 - A reviewer can verify which baseline run is being compared against, including
@@ -246,7 +247,7 @@ detection has nothing to compare against.
 
 ### Push The Baseline To A Branch Instead Of Caching It
 
-A branch such as `assay-baselines` could hold `surface.json` per main SHA,
+A branch such as `assay-baselines` could hold `surface.json` per base SHA,
 sidestepping cache eviction.
 
 Rejected for this scope because it adds repo-write permission to the action's
