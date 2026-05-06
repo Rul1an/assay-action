@@ -168,6 +168,46 @@ want the same evidence boundary to show up consistently in PRs.
 v2 reviews the run. The planned diff mode will review what this PR changed about
 the agent capability surface.
 
+## Experimental Capability Diff Preview
+
+Assay's planned diff mode is not exposed through the action yet, but an
+experimental script preview is available for people who want to inspect the
+early shape on their own bundles.
+
+```bash
+bash scripts/diff_surface.sh main-run.tar.gz pr-run.tar.gz
+```
+
+Example output:
+
+```markdown
+# Agent capability diff
+
+### Network endpoints
+  + api.openai.com:443
+
+### Tool calls
+  + shell.exec
+
+### Policy verdicts (deny) [deny]
+  + filesystem-sensitive:/etc/hosts
+
+Summary: +3 new, -0 removed across capability dimensions.
+```
+
+This preview is intentionally **scripts only**:
+
+- no `mode: diff` in `action.yml`
+- no PR gate
+- no production "versus main" baseline claim
+- schema and CLI may change in any commit
+
+Do not rely on the preview in production CI. Production capability diff remains
+blocked by [ADR 0001](docs/adrs/0001-baseline-surface.md) and
+[ADR 0002](docs/adrs/0002-scope-b-observation-gate.md). See
+[Experimental Capability Diff Preview](docs/experimental-capability-diff.md) for
+usage and guardrails.
+
 ## Inputs
 
 | Input | Default | Description |
