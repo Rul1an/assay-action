@@ -96,6 +96,21 @@ outputs:
   baseline_delta:
     description: 'One-line new-finding summary versus the restored baseline'
     value: ${{ steps.baseline-diff.outputs.summary }}
+  baseline_found:
+    description: 'true if a baseline report was available for comparison'
+    value: ${{ steps.baseline-diff.outputs.baseline_found }}
+  baseline_new_findings:
+    description: 'Count of findings present in the current run but absent from the baseline'
+    value: ${{ steps.baseline-diff.outputs.new_findings }}
+  baseline_removed_findings:
+    description: 'Count of findings present in the baseline but absent from the current run'
+    value: ${{ steps.baseline-diff.outputs.removed_findings }}
+  baseline_unchanged_findings:
+    description: 'Count of findings present in both the baseline and current run'
+    value: ${{ steps.baseline-diff.outputs.unchanged_findings }}
+  baseline_diff_detail:
+    description: 'One-line added, removed, and unchanged finding summary versus the restored baseline'
+    value: ${{ steps.baseline-diff.outputs.detail_summary }}
 
 runs:
   using: 'composite'
@@ -510,14 +525,31 @@ runs:
             --argjson new_error_findings 0 \
             --argjson new_warning_findings 0 \
             --argjson new_info_findings 0 \
-            '{baseline_found: $baseline_found, fingerprint_version: $fingerprint_version, summary: $summary, new_findings: $new_findings, new_error_findings: $new_error_findings, new_warning_findings: $new_warning_findings, new_info_findings: $new_info_findings}' \
+            --argjson removed_findings 0 \
+            --argjson removed_error_findings 0 \
+            --argjson removed_warning_findings 0 \
+            --argjson removed_info_findings 0 \
+            --argjson unchanged_findings 0 \
+            --argjson unchanged_error_findings 0 \
+            --argjson unchanged_warning_findings 0 \
+            --argjson unchanged_info_findings 0 \
+            '{baseline_found: $baseline_found, fingerprint_version: $fingerprint_version, summary: $summary, detail_summary: $summary, new_findings: $new_findings, new_error_findings: $new_error_findings, new_warning_findings: $new_warning_findings, new_info_findings: $new_info_findings, removed_findings: $removed_findings, removed_error_findings: $removed_error_findings, removed_warning_findings: $removed_warning_findings, removed_info_findings: $removed_info_findings, unchanged_findings: $unchanged_findings, unchanged_error_findings: $unchanged_error_findings, unchanged_warning_findings: $unchanged_warning_findings, unchanged_info_findings: $unchanged_info_findings}' \
             > "$REPORTS_DIR/baseline-diff.json"
           echo "baseline_found=false" >> "$GITHUB_OUTPUT"
           echo "new_findings=0" >> "$GITHUB_OUTPUT"
           echo "new_error_findings=0" >> "$GITHUB_OUTPUT"
           echo "new_warning_findings=0" >> "$GITHUB_OUTPUT"
           echo "new_info_findings=0" >> "$GITHUB_OUTPUT"
+          echo "removed_findings=0" >> "$GITHUB_OUTPUT"
+          echo "removed_error_findings=0" >> "$GITHUB_OUTPUT"
+          echo "removed_warning_findings=0" >> "$GITHUB_OUTPUT"
+          echo "removed_info_findings=0" >> "$GITHUB_OUTPUT"
+          echo "unchanged_findings=0" >> "$GITHUB_OUTPUT"
+          echo "unchanged_error_findings=0" >> "$GITHUB_OUTPUT"
+          echo "unchanged_warning_findings=0" >> "$GITHUB_OUTPUT"
+          echo "unchanged_info_findings=0" >> "$GITHUB_OUTPUT"
           echo "summary=No baseline yet" >> "$GITHUB_OUTPUT"
+          echo "detail_summary=No baseline yet" >> "$GITHUB_OUTPUT"
         }
 
         CURRENT="$REPORTS_DIR/lint.json"
@@ -611,22 +643,42 @@ runs:
         finding_keys "$BASELINE_SOURCE/lint.json" > /tmp/assay-baseline-findings.keys
         finding_keys "$CURRENT" > /tmp/assay-current-findings.keys
         comm -13 /tmp/assay-baseline-findings.keys /tmp/assay-current-findings.keys > /tmp/assay-new-findings.keys
+        comm -23 /tmp/assay-baseline-findings.keys /tmp/assay-current-findings.keys > /tmp/assay-removed-findings.keys
+        comm -12 /tmp/assay-baseline-findings.keys /tmp/assay-current-findings.keys > /tmp/assay-unchanged-findings.keys
 
         NEW_FINDINGS=$(wc -l < /tmp/assay-new-findings.keys | tr -d ' ')
         NEW_ERRORS=$(awk -F '\t' '$1 == "error" { count++ } END { print count + 0 }' /tmp/assay-new-findings.keys)
         NEW_WARNINGS=$(awk -F '\t' '$1 == "warning" { count++ } END { print count + 0 }' /tmp/assay-new-findings.keys)
         NEW_INFOS=$(awk -F '\t' '$1 == "info" { count++ } END { print count + 0 }' /tmp/assay-new-findings.keys)
+        REMOVED_FINDINGS=$(wc -l < /tmp/assay-removed-findings.keys | tr -d ' ')
+        REMOVED_ERRORS=$(awk -F '\t' '$1 == "error" { count++ } END { print count + 0 }' /tmp/assay-removed-findings.keys)
+        REMOVED_WARNINGS=$(awk -F '\t' '$1 == "warning" { count++ } END { print count + 0 }' /tmp/assay-removed-findings.keys)
+        REMOVED_INFOS=$(awk -F '\t' '$1 == "info" { count++ } END { print count + 0 }' /tmp/assay-removed-findings.keys)
+        UNCHANGED_FINDINGS=$(wc -l < /tmp/assay-unchanged-findings.keys | tr -d ' ')
+        UNCHANGED_ERRORS=$(awk -F '\t' '$1 == "error" { count++ } END { print count + 0 }' /tmp/assay-unchanged-findings.keys)
+        UNCHANGED_WARNINGS=$(awk -F '\t' '$1 == "warning" { count++ } END { print count + 0 }' /tmp/assay-unchanged-findings.keys)
+        UNCHANGED_INFOS=$(awk -F '\t' '$1 == "info" { count++ } END { print count + 0 }' /tmp/assay-unchanged-findings.keys)
         SUMMARY="+${NEW_ERRORS} new error findings, +${NEW_WARNINGS} new warning findings vs ${BASELINE_LABEL} baseline"
+        DETAIL_SUMMARY="+${NEW_FINDINGS} added, -${REMOVED_FINDINGS} removed, ${UNCHANGED_FINDINGS} unchanged vs ${BASELINE_LABEL} baseline"
 
         jq -n \
           --arg fingerprint_version "$FINGERPRINT_VERSION" \
           --argjson baseline_found true \
           --arg summary "$SUMMARY" \
+          --arg detail_summary "$DETAIL_SUMMARY" \
           --argjson new_findings "$NEW_FINDINGS" \
           --argjson new_error_findings "$NEW_ERRORS" \
           --argjson new_warning_findings "$NEW_WARNINGS" \
           --argjson new_info_findings "$NEW_INFOS" \
-          '{baseline_found: $baseline_found, fingerprint_version: $fingerprint_version, summary: $summary, new_findings: $new_findings, new_error_findings: $new_error_findings, new_warning_findings: $new_warning_findings, new_info_findings: $new_info_findings}' \
+          --argjson removed_findings "$REMOVED_FINDINGS" \
+          --argjson removed_error_findings "$REMOVED_ERRORS" \
+          --argjson removed_warning_findings "$REMOVED_WARNINGS" \
+          --argjson removed_info_findings "$REMOVED_INFOS" \
+          --argjson unchanged_findings "$UNCHANGED_FINDINGS" \
+          --argjson unchanged_error_findings "$UNCHANGED_ERRORS" \
+          --argjson unchanged_warning_findings "$UNCHANGED_WARNINGS" \
+          --argjson unchanged_info_findings "$UNCHANGED_INFOS" \
+          '{baseline_found: $baseline_found, fingerprint_version: $fingerprint_version, summary: $summary, detail_summary: $detail_summary, new_findings: $new_findings, new_error_findings: $new_error_findings, new_warning_findings: $new_warning_findings, new_info_findings: $new_info_findings, removed_findings: $removed_findings, removed_error_findings: $removed_error_findings, removed_warning_findings: $removed_warning_findings, removed_info_findings: $removed_info_findings, unchanged_findings: $unchanged_findings, unchanged_error_findings: $unchanged_error_findings, unchanged_warning_findings: $unchanged_warning_findings, unchanged_info_findings: $unchanged_info_findings}' \
           > "$REPORTS_DIR/baseline-diff.json"
 
         echo "baseline_found=true" >> "$GITHUB_OUTPUT"
@@ -634,7 +686,16 @@ runs:
         echo "new_error_findings=$NEW_ERRORS" >> "$GITHUB_OUTPUT"
         echo "new_warning_findings=$NEW_WARNINGS" >> "$GITHUB_OUTPUT"
         echo "new_info_findings=$NEW_INFOS" >> "$GITHUB_OUTPUT"
+        echo "removed_findings=$REMOVED_FINDINGS" >> "$GITHUB_OUTPUT"
+        echo "removed_error_findings=$REMOVED_ERRORS" >> "$GITHUB_OUTPUT"
+        echo "removed_warning_findings=$REMOVED_WARNINGS" >> "$GITHUB_OUTPUT"
+        echo "removed_info_findings=$REMOVED_INFOS" >> "$GITHUB_OUTPUT"
+        echo "unchanged_findings=$UNCHANGED_FINDINGS" >> "$GITHUB_OUTPUT"
+        echo "unchanged_error_findings=$UNCHANGED_ERRORS" >> "$GITHUB_OUTPUT"
+        echo "unchanged_warning_findings=$UNCHANGED_WARNINGS" >> "$GITHUB_OUTPUT"
+        echo "unchanged_info_findings=$UNCHANGED_INFOS" >> "$GITHUB_OUTPUT"
         echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
+        echo "detail_summary=$DETAIL_SUMMARY" >> "$GITHUB_OUTPUT"
 
     # =========================================================================
     # E5: PR Feedback - Job Summary + PR Comment
@@ -656,6 +717,11 @@ runs:
         FAILURE_POLICY: ${{ steps.process.outputs.failure_policy }}
         FAILURE_REASON: ${{ steps.process.outputs.failure_reason }}
         BASELINE_SUMMARY: ${{ steps.baseline-diff.outputs.summary }}
+        BASELINE_FOUND: ${{ steps.baseline-diff.outputs.baseline_found }}
+        BASELINE_DETAIL: ${{ steps.baseline-diff.outputs.detail_summary }}
+        BASELINE_NEW: ${{ steps.baseline-diff.outputs.new_findings }}
+        BASELINE_REMOVED: ${{ steps.baseline-diff.outputs.removed_findings }}
+        BASELINE_UNCHANGED: ${{ steps.baseline-diff.outputs.unchanged_findings }}
       run: |
         ARTIFACT_NAME="assay-reports-${GITHUB_RUN_ID}"
         {
@@ -702,6 +768,14 @@ runs:
             if [ -n "${BASELINE_SUMMARY:-}" ]; then
               echo "| Baseline delta | ${BASELINE_SUMMARY} |"
             fi
+            if [ "${BASELINE_FOUND:-false}" = "true" ]; then
+              if [ -n "${BASELINE_DETAIL:-}" ]; then
+                FINDING_DIFF="$BASELINE_DETAIL"
+              else
+                FINDING_DIFF="+${BASELINE_NEW:-0} added, -${BASELINE_REMOVED:-0} removed, ${BASELINE_UNCHANGED:-0} unchanged"
+              fi
+              echo "| Finding diff | ${FINDING_DIFF} |"
+            fi
             echo "| Reports artifact | \`$ARTIFACT_NAME\` |"
 
             # Show findings summary if any
@@ -731,30 +805,81 @@ runs:
         comment-author: 'github-actions[bot]'
         body-includes: '<!-- assay-report -->'
 
+    - name: Prepare PR comment
+      id: pr-comment
+      if: always() && github.event_name == 'pull_request' && inputs.comment_diff == 'true' && steps.discover.outputs.found == 'true' && (steps.process.outputs.findings_error != '0' || steps.process.outputs.findings_warn != '0' || steps.process.outputs.findings_info != '0' || steps.process.outputs.failed_count != '0' || (steps.baseline-diff.outputs.baseline_found == 'true' && (steps.baseline-diff.outputs.new_findings != '0' || steps.baseline-diff.outputs.removed_findings != '0')))
+      shell: bash
+      env:
+        BUNDLES: ${{ steps.discover.outputs.count }}
+        ERRORS: ${{ steps.process.outputs.findings_error }}
+        WARNS: ${{ steps.process.outputs.findings_warn }}
+        INFOS: ${{ steps.process.outputs.findings_info }}
+        BASELINE_FOUND: ${{ steps.baseline-diff.outputs.baseline_found }}
+        BASELINE_SUMMARY: ${{ steps.baseline-diff.outputs.summary }}
+        BASELINE_DETAIL: ${{ steps.baseline-diff.outputs.detail_summary }}
+        NEW_ERRORS: ${{ steps.baseline-diff.outputs.new_error_findings }}
+        NEW_WARNINGS: ${{ steps.baseline-diff.outputs.new_warning_findings }}
+        NEW_INFOS: ${{ steps.baseline-diff.outputs.new_info_findings }}
+        REMOVED_ERRORS: ${{ steps.baseline-diff.outputs.removed_error_findings }}
+        REMOVED_WARNINGS: ${{ steps.baseline-diff.outputs.removed_warning_findings }}
+        REMOVED_INFOS: ${{ steps.baseline-diff.outputs.removed_info_findings }}
+        UNCHANGED_ERRORS: ${{ steps.baseline-diff.outputs.unchanged_error_findings }}
+        UNCHANGED_WARNINGS: ${{ steps.baseline-diff.outputs.unchanged_warning_findings }}
+        UNCHANGED_INFOS: ${{ steps.baseline-diff.outputs.unchanged_info_findings }}
+        FAILURE_POLICY: ${{ steps.process.outputs.failure_policy }}
+      run: |
+        set -euo pipefail
+
+        COMMENT_PATH="${RUNNER_TEMP:-/tmp}/assay-pr-comment.md"
+        {
+          echo "<!-- assay-report -->"
+          echo "## Assay Report"
+          echo ""
+          echo "| Metric | Value |"
+          echo "|--------|-------|"
+          echo "| Bundles | ${BUNDLES:-0} |"
+          echo "| Errors | ${ERRORS:-0} |"
+          echo "| Warnings | ${WARNS:-0} |"
+          echo "| Info | ${INFOS:-0} |"
+          echo "| Baseline delta | ${BASELINE_SUMMARY:-No baseline yet} |"
+          if [ "${BASELINE_FOUND:-false}" = "true" ]; then
+            echo "| Finding diff | ${BASELINE_DETAIL:-+0 added, -0 removed, 0 unchanged} |"
+          else
+            echo "| Finding diff | No baseline yet |"
+          fi
+          echo "| Reports artifact | \`assay-reports-${GITHUB_RUN_ID}\` |"
+          echo ""
+
+          if [ "${BASELINE_FOUND:-false}" = "true" ]; then
+            echo "### Finding Diff vs Baseline"
+            echo ""
+            echo "| Severity | Added | Removed | Unchanged |"
+            echo "|----------|------:|--------:|----------:|"
+            echo "| Error | ${NEW_ERRORS:-0} | ${REMOVED_ERRORS:-0} | ${UNCHANGED_ERRORS:-0} |"
+            echo "| Warning | ${NEW_WARNINGS:-0} | ${REMOVED_WARNINGS:-0} | ${UNCHANGED_WARNINGS:-0} |"
+            echo "| Info | ${NEW_INFOS:-0} | ${REMOVED_INFOS:-0} | ${UNCHANGED_INFOS:-0} |"
+            echo ""
+          else
+            echo "Baseline comparison is not available yet. Push a green run to the base branch with \`write_baseline: true\` to enable added/removed/unchanged finding diffs."
+            echo ""
+          fi
+
+          echo "Failure policy: ${FAILURE_POLICY:-bundle verification failure or error-level findings}."
+          echo ""
+          echo "View details in the [Security tab](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/security/code-scanning), [Job Summary](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}), or the \`assay-reports-${GITHUB_RUN_ID}\` artifact."
+        } > "$COMMENT_PATH"
+
+        echo "path=$COMMENT_PATH" >> "$GITHUB_OUTPUT"
+
     - name: Post or update PR comment
-      if: always() && github.event_name == 'pull_request' && inputs.comment_diff == 'true' && steps.discover.outputs.found == 'true' && (steps.process.outputs.findings_error != '0' || steps.process.outputs.findings_warn != '0' || steps.process.outputs.findings_info != '0' || steps.process.outputs.failed_count != '0')
+      if: always() && github.event_name == 'pull_request' && inputs.comment_diff == 'true' && steps.discover.outputs.found == 'true' && (steps.process.outputs.findings_error != '0' || steps.process.outputs.findings_warn != '0' || steps.process.outputs.findings_info != '0' || steps.process.outputs.failed_count != '0' || (steps.baseline-diff.outputs.baseline_found == 'true' && (steps.baseline-diff.outputs.new_findings != '0' || steps.baseline-diff.outputs.removed_findings != '0')))
       uses: peter-evans/create-or-update-comment@v5
       continue-on-error: true
       with:
         comment-id: ${{ steps.find-comment.outputs.comment-id }}
         issue-number: ${{ github.event.pull_request.number }}
         edit-mode: replace
-        body: |
-          <!-- assay-report -->
-          ## Assay Report
-
-          | Metric | Value |
-          |--------|-------|
-          | Bundles | ${{ steps.discover.outputs.count }} |
-          | Errors | ${{ steps.process.outputs.findings_error }} |
-          | Warnings | ${{ steps.process.outputs.findings_warn }} |
-          | Info | ${{ steps.process.outputs.findings_info }} |
-          | Baseline delta | ${{ steps.baseline-diff.outputs.summary || 'No baseline yet' }} |
-          | Reports artifact | `assay-reports-${{ github.run_id }}` |
-
-          Failure policy: ${{ steps.process.outputs.failure_policy || 'bundle verification failure or error-level findings' }}.
-
-          View details in the [Security tab](${{ github.server_url }}/${{ github.repository }}/security/code-scanning), [Job Summary](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}), or the `assay-reports-${{ github.run_id }}` artifact.
+        body-path: ${{ steps.pr-comment.outputs.path }}
 
     # =========================================================================
     # E6: Baseline cache & artifacts

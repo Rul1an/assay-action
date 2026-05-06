@@ -61,12 +61,14 @@ diff_pair() {
   local current_keys="$WORK/current.keys"
   local added
   local removed
+  local unchanged
 
   fp_keys "$baseline" > "$baseline_keys"
   fp_keys "$current" > "$current_keys"
   added=$(comm -13 "$baseline_keys" "$current_keys" | sed '/^$/d' | wc -l | tr -d ' ')
   removed=$(comm -23 "$baseline_keys" "$current_keys" | sed '/^$/d' | wc -l | tr -d ' ')
-  echo "$added $removed"
+  unchanged=$(comm -12 "$baseline_keys" "$current_keys" | sed '/^$/d' | wc -l | tr -d ' ')
+  echo "$added $removed $unchanged"
 }
 
 native() {
@@ -251,33 +253,37 @@ scn_mixed() {
 declare -a TESTS=()
 
 add() {
-  TESTS+=("$1|$2|$3|$4|$5|$6")
+  TESTS+=("$1|$2|$3|$4|$5|$6|$7")
 }
 
 n=0
-for i in $(seq 1 15); do n=$((n + 1)); add "$(printf %02d "$n")-noop-$i" "no-op" 0 0 scn_noop "$i"; done
-for i in $(seq 1 5); do n=$((n + 1)); add "$(printf %02d "$n")-add-error-$i" "addition" 1 0 scn_add_error "$i"; done
-for i in $(seq 1 3); do n=$((n + 1)); add "$(printf %02d "$n")-add-warning-$i" "addition" 1 0 scn_add_warning "$i"; done
-for i in $(seq 1 2); do n=$((n + 1)); add "$(printf %02d "$n")-add-info-$i" "addition" 1 0 scn_add_info "$i"; done
-for i in $(seq 1 5); do n=$((n + 1)); add "$(printf %02d "$n")-remove-$i" "removal" 0 1 scn_remove "$i"; done
-for i in $(seq 1 5); do n=$((n + 1)); add "$(printf %02d "$n")-message-$i" "stability" 0 0 scn_msg_only "$i"; done
-for i in $(seq 1 5); do n=$((n + 1)); add "$(printf %02d "$n")-shape-$i" "stability" 0 0 scn_shape_mix "$i"; done
-for i in $(seq 1 4); do n=$((n + 1)); add "$(printf %02d "$n")-line-shift-$i" "location-shift" 1 1 scn_line_shift "$i"; done
-for i in $(seq 1 3); do n=$((n + 1)); add "$(printf %02d "$n")-rule-rename-$i" "rule-rename" 1 1 scn_rule_rename "$i"; done
-n=$((n + 1)); add "$(printf %02d "$n")-empty-baseline" "edge" 1 0 scn_empty_baseline 0
-n=$((n + 1)); add "$(printf %02d "$n")-empty-current" "edge" 0 1 scn_empty_current 0
-n=$((n + 1)); add "$(printf %02d "$n")-mixed" "mixed" 2 1 scn_mixed 1
+for i in $(seq 1 5); do n=$((n + 1)); add "$(printf %02d "$n")-noop-$i" "no-op" 0 0 "$i" scn_noop "$i"; done
+for i in $(seq 6 8); do n=$((n + 1)); add "$(printf %02d "$n")-noop-$i" "no-op" 0 0 2 scn_noop "$i"; done
+for i in $(seq 9 11); do n=$((n + 1)); add "$(printf %02d "$n")-noop-$i" "no-op" 0 0 3 scn_noop "$i"; done
+for i in $(seq 12 13); do n=$((n + 1)); add "$(printf %02d "$n")-noop-$i" "no-op" 0 0 1 scn_noop "$i"; done
+for i in $(seq 14 15); do n=$((n + 1)); add "$(printf %02d "$n")-noop-$i" "no-op" 0 0 2 scn_noop "$i"; done
+for i in $(seq 1 5); do n=$((n + 1)); add "$(printf %02d "$n")-add-error-$i" "addition" 1 0 1 scn_add_error "$i"; done
+for i in $(seq 1 3); do n=$((n + 1)); add "$(printf %02d "$n")-add-warning-$i" "addition" 1 0 1 scn_add_warning "$i"; done
+for i in $(seq 1 2); do n=$((n + 1)); add "$(printf %02d "$n")-add-info-$i" "addition" 1 0 1 scn_add_info "$i"; done
+for i in $(seq 1 5); do n=$((n + 1)); add "$(printf %02d "$n")-remove-$i" "removal" 0 1 1 scn_remove "$i"; done
+for i in $(seq 1 5); do n=$((n + 1)); add "$(printf %02d "$n")-message-$i" "stability" 0 0 1 scn_msg_only "$i"; done
+for i in $(seq 1 5); do n=$((n + 1)); add "$(printf %02d "$n")-shape-$i" "stability" 0 0 1 scn_shape_mix "$i"; done
+for i in $(seq 1 4); do n=$((n + 1)); add "$(printf %02d "$n")-line-shift-$i" "location-shift" 1 1 0 scn_line_shift "$i"; done
+for i in $(seq 1 3); do n=$((n + 1)); add "$(printf %02d "$n")-rule-rename-$i" "rule-rename" 1 1 0 scn_rule_rename "$i"; done
+n=$((n + 1)); add "$(printf %02d "$n")-empty-baseline" "edge" 1 0 0 scn_empty_baseline 0
+n=$((n + 1)); add "$(printf %02d "$n")-empty-current" "edge" 0 1 0 scn_empty_current 0
+n=$((n + 1)); add "$(printf %02d "$n")-mixed" "mixed" 2 1 1 scn_mixed 1
 
 PASS=0
 FAIL=0
 RESULT_TSV="$WORK/results.tsv"
 : > "$RESULT_TSV"
 
-printf '%-26s  %-15s  %4s  %4s  %4s  %4s  %s\n' "ID" "CATEGORY" "EXP+" "GOT+" "EXP-" "GOT-" "RESULT"
-printf '%s\n' "-----------------------------------------------------------------------------------"
+printf '%-26s  %-15s  %4s  %4s  %4s  %4s  %4s  %4s  %s\n' "ID" "CATEGORY" "EXP+" "GOT+" "EXP-" "GOT-" "EXP=" "GOT=" "RESULT"
+printf '%s\n' "-------------------------------------------------------------------------------------------------"
 
 for entry in "${TESTS[@]}"; do
-  IFS='|' read -r id category exp_added exp_removed generator seed <<EOF
+  IFS='|' read -r id category exp_added exp_removed exp_unchanged generator seed <<EOF
 $entry
 EOF
   case_dir="$WORK/$id"
@@ -287,19 +293,19 @@ EOF
 
   mkdir -p "$case_dir"
   "$generator" "$seed" "$baseline" "$current"
-  read -r got_added got_removed <<EOF
+  read -r got_added got_removed got_unchanged <<EOF
 $(diff_pair "$baseline" "$current")
 EOF
 
-  if [ "$got_added" = "$exp_added" ] && [ "$got_removed" = "$exp_removed" ]; then
+  if [ "$got_added" = "$exp_added" ] && [ "$got_removed" = "$exp_removed" ] && [ "$got_unchanged" = "$exp_unchanged" ]; then
     PASS=$((PASS + 1))
   else
     result="FAIL"
     FAIL=$((FAIL + 1))
   fi
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$category" "$exp_added" "$got_added" "$exp_removed" "$got_removed" "$result" >> "$RESULT_TSV"
-  printf '%-26s  %-15s  %4s  %4s  %4s  %4s  %s\n' "$id" "$category" "$exp_added" "$got_added" "$exp_removed" "$got_removed" "$result"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$category" "$exp_added" "$got_added" "$exp_removed" "$got_removed" "$exp_unchanged" "$got_unchanged" "$result" >> "$RESULT_TSV"
+  printf '%-26s  %-15s  %4s  %4s  %4s  %4s  %4s  %4s  %s\n' "$id" "$category" "$exp_added" "$got_added" "$exp_removed" "$got_removed" "$exp_unchanged" "$got_unchanged" "$result"
 done
 
 echo
@@ -310,7 +316,7 @@ echo "Per category:"
 awk -F '\t' '
 {
   total[$2]++
-  if ($7 == "pass") {
+  if ($9 == "pass") {
     passed[$2]++
   }
 }
@@ -323,6 +329,6 @@ END {
 if [ "$FAIL" -gt 0 ]; then
   echo
   echo "Failed cases:"
-  awk -F '\t' '$7 == "FAIL" { printf "  - %s (%s): expected +%s/-%s, got +%s/-%s\n", $1, $2, $3, $5, $4, $6 }' "$RESULT_TSV"
+  awk -F '\t' '$9 == "FAIL" { printf "  - %s (%s): expected +%s/-%s/=%s, got +%s/-%s/=%s\n", $1, $2, $3, $5, $7, $4, $6, $8 }' "$RESULT_TSV"
   exit 1
 fi
