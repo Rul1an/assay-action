@@ -2,7 +2,7 @@
 
 *Last verified 2026-05-06 against `assay-cli` 3.9.1, reducer `assay-openfeature-evaluation-details@0.1.0`. Receipt excerpt below is the actual content of the `openfeature` evidence bundle in the Assay repo.*
 
-Your agent or application calls OpenFeature flag providers at runtime. Each evaluation produces an `EvaluationDetails` payload — flag key, decision, value, reason, optionally an error code. You want a portable, signed artifact that captures selected evaluations as evidence, reviewable in a PR, archivable for audit.
+Your agent or application calls OpenFeature flag providers at runtime. Each evaluation produces an `EvaluationDetails` payload — flag key, decision, value, reason, optionally an error code. You want a portable, content-addressed artifact that captures selected evaluations as evidence, reviewable in a PR, archivable for audit.
 
 This page shows how an Assay receipt is produced from OpenFeature's `evaluation_details` output, what the receipt looks like, and what it does and does not prove.
 
@@ -36,11 +36,10 @@ The receipt is produced by a reducer that reads OpenFeature's `evaluation_detail
 # Your test or agent run produces evaluation_details.jsonl
 # (one line per flag evaluation, OpenFeature's standard schema)
 
-assay receipt import \
-  --source openfeature \
-  --reducer assay-openfeature-evaluation-details@0.1.0 \
+assay evidence import openfeature-details \
   --input candidate.openfeature-details.jsonl \
-  --output .assay/evidence/openfeature_run.tar.gz
+  --bundle-out .assay/evidence/openfeature_run.tar.gz \
+  --source-artifact-ref candidate.openfeature-details.jsonl
 
 # Then review in PR via Rul1an/assay-action@v2:
 #   bundles: ".assay/evidence/*.tar.gz"

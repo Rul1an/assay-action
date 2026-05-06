@@ -2,7 +2,7 @@
 
 *Last verified 2026-05-06 against `assay-cli` 3.9.1, reducer `assay-promptfoo-jsonl-component-result@0.1.0`. Receipt excerpt below is the actual content of the `promptfoo` evidence bundle in the Assay repo.*
 
-You run Promptfoo evals as part of your CI. You want a portable, signed receipt of selected assertion outcomes that survives outside Promptfoo — reviewable in a PR, archivable for audit, citable in a compliance review — without re-running the eval.
+You run Promptfoo evals as part of your CI. You want a portable, content-addressed receipt of selected assertion outcomes that survives outside Promptfoo — reviewable in a PR, archivable for audit, citable in a compliance review — without re-running the eval.
 
 This page shows how an Assay receipt is produced from Promptfoo's JSONL output, what the receipt looks like, and what it does and does not prove.
 
@@ -36,11 +36,10 @@ The receipt is produced by a reducer that reads Promptfoo's JSONL and emits one 
 promptfoo eval --output results.jsonl
 
 # Convert selected assertion outcomes to Assay receipts:
-assay receipt import \
-  --source promptfoo \
-  --reducer assay-promptfoo-jsonl-component-result@0.1.0 \
+assay evidence import promptfoo-jsonl \
   --input results.jsonl \
-  --output .assay/evidence/promptfoo_run.tar.gz
+  --bundle-out .assay/evidence/promptfoo_run.tar.gz \
+  --source-artifact-ref results.jsonl
 
 # Review in PR via the action:
 # (see the assay-action README for the workflow)

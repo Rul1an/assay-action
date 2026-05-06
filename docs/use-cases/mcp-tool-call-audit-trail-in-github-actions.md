@@ -14,7 +14,7 @@ This page shows the workflow that produces that record, what the record looks li
 
 ## What you get
 
-- A signed evidence bundle with one event per observed tool/capability action.
+- A content-addressed evidence bundle with one event per observed tool/capability action.
 - A GitHub job summary line indicating verification, finding count, and baseline delta.
 - A SARIF projection in the Security tab.
 - A downloadable `assay-reports-${{ github.run_id }}` artifact.
