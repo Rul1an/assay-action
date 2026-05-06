@@ -24,6 +24,14 @@ permissions:
   actions: write
 
 jobs:
+  fingerprint-sim:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Simulate v2 fingerprint stability
+        run: bash scripts/sim_fingerprint.sh
+
   install-smoke:
     runs-on: ubuntu-latest
     steps:
