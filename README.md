@@ -67,10 +67,13 @@ with:
   write_baseline: ${{ github.ref == 'refs/heads/main' }}
 ```
 
-When a baseline is available, the job summary includes a line like
-`+2 new error findings vs main baseline`, or the actual base branch for PRs
-targeting something other than `main`. This is intentionally small in v2: it
-trains the PR-review shape without pretending to be the full planned diff mode.
+When a baseline is available, the job summary includes the compact v2 signal,
+such as `+2 new error findings vs main baseline`, plus a fuller finding diff:
+`+2 added, -1 removed, 4 unchanged vs main baseline`. For PRs targeting
+something other than `main`, the actual base branch is shown.
+
+This is still intentionally small in v2: it trains the PR-review shape without
+pretending to be the full planned capability diff mode.
 
 Baseline fingerprints use severity, rule ID, and canonical location. Messages
 stay advisory so wording-only changes do not create fake new-finding deltas.
@@ -123,7 +126,7 @@ is correct or safe. It makes the observed evidence boundary reviewable.
 | Reports artifact | `assay-reports-${{ github.run_id }}` | Downloadable evidence review pack |
 | SARIF | `.assay-reports/lint.sarif` | GitHub code scanning upload |
 | JSON report | `.assay-reports/lint.json` | Aggregated lint findings |
-| Baseline delta | `.assay-reports/baseline-diff.json` | New-finding signal vs baseline |
+| Baseline delta | `.assay-reports/baseline-diff.json` | Added/removed/unchanged finding signal vs baseline |
 | Per-bundle SARIF | `.assay-reports/lint-<bundle>.sarif` | Bundle-scoped projection |
 
 The reports artifact is intentionally named and visible. If a reviewer asks
@@ -147,6 +150,7 @@ What fails this PR: bundle verification failure or error-level findings.
 | Errors | 0 |
 | Warnings | 1 |
 | Baseline delta | +0 new error findings, +1 new warning findings vs main baseline |
+| Finding diff | +1 added, -0 removed, 2 unchanged vs main baseline |
 | Reports artifact | assay-reports-123456789 |
 
 Review the SARIF upload in the Security tab, or download the reports artifact.
@@ -175,7 +179,7 @@ the agent capability surface.
 | `baseline_key` | repository key | Baseline cache lookup key |
 | `baseline_dir` | empty | Local baseline reports directory containing `lint.json` |
 | `write_baseline` | `false` | Save baseline on `main` after a successful run |
-| `comment_diff` | `true` | Post a PR comment only when findings exist |
+| `comment_diff` | `true` | Post a PR comment when findings, verification failures, or baseline finding diffs exist |
 | `mode` | `review` | `review` existing bundles, or `capture` then review |
 | `run` | empty | Command that creates bundles when `mode: capture` |
 | `version` | `latest` | Assay CLI version to install |
@@ -192,6 +196,11 @@ the agent capability surface.
 | `diff_summary` | One-line evidence summary |
 | `reports_dir` | Path to the reports directory before upload |
 | `baseline_delta` | One-line new-finding summary versus the restored baseline |
+| `baseline_found` | `true` if a baseline report was available for comparison |
+| `baseline_new_findings` | Count of findings present in the current run but absent from the baseline |
+| `baseline_removed_findings` | Count of findings present in the baseline but absent from the current run |
+| `baseline_unchanged_findings` | Count of findings present in both the baseline and current run |
+| `baseline_diff_detail` | One-line added, removed, and unchanged finding summary versus the restored baseline |
 
 ## Permissions
 
