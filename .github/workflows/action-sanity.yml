@@ -7,6 +7,7 @@ on:
       - "action.yml"
       - "README.md"
       - "examples/**"
+      - "scripts/**"
   push:
     branches: [main]
     paths:
@@ -14,6 +15,7 @@ on:
       - "action.yml"
       - "README.md"
       - "examples/**"
+      - "scripts/**"
   workflow_dispatch:
   schedule:
     # Weekly canary for GitHub runner, nested action, cache, and release-binary drift.
