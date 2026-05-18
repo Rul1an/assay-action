@@ -412,9 +412,9 @@ For lessons from building these, see [the engineering blog](docs/blog/README.md)
 
 ## Related
 
-- [Assay CLI](https://github.com/Rul1an/assay)
+- [Assay CLI](https://github.com/Rul1an/assay) — the engine. Compiles policy and produces evidence bundles.
+- [Assay Harness](https://github.com/Rul1an/Assay-Harness) — the recipe, gate, and report layer. Use it for multi-step baseline/candidate recipes and release-proof runs; this action is the single-step GitHub-native entry point for the same evidence bundles.
 - [Evidence Receipts in Action](https://github.com/Rul1an/assay/blob/main/docs/notes/EVIDENCE-RECEIPTS-IN-ACTION.md)
-- [Assay Harness](https://github.com/Rul1an/Assay-Harness)
 
 ## License
 
