@@ -17,6 +17,22 @@ Use this if you run tests against agents that call Model Context Protocol (MCP)
 tools, HTTP APIs, or function-calling interfaces and want CodeQL-like review for
 the evidence captured while your tests ran.
 
+## v3.0.0
+
+This is the AI Agent Security action. On top of verify, lint, diff, compliance
+packs, BYOS push, artifact attestation, and coverage badges, v3 adds two optional
+inputs:
+
+- `sandbox-command` — run a coding agent under `assay sandbox` (Landlock, observe
+  and record), producing an evidence bundle that the action lints.
+- `attest-key` — sign the bundle's manifest as an in-toto/DSSE attestation via
+  `assay evidence attest`, exposed as the `attestation_envelope` output.
+
+Both are off by default, so existing workflows keep working. Pin `@v3` for the
+current action. The older `@v2` "Evidence Artifacts" line, which had `mode`/`run`
+inputs this action does not carry, remains available for workflows that depend on
+it.
+
 Assay's own repository tests this action shape in CI with repo-local evidence
 bundles. Use it alongside eval tools such as Promptfoo or similar CI eval
 tooling: they help score output quality; Assay preserves and reviews the tested
