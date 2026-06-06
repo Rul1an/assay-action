@@ -41,7 +41,7 @@ assay evidence import openfeature-details \
   --bundle-out .assay/evidence/openfeature_run.tar.gz \
   --source-artifact-ref candidate.openfeature-details.jsonl
 
-# Then review in PR via Rul1an/assay-action@v2:
+# Then review in PR via Rul1an/assay-action@v3:
 #   bundles: ".assay/evidence/*.tar.gz"
 ```
 

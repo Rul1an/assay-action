@@ -16,13 +16,16 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Capture and review evidence
-        uses: Rul1an/assay-action@v2
+      - name: Run under sandbox and review evidence
+        uses: Rul1an/assay-action@v3
         with:
-          # capture runs this command first; review mode only checks existing bundles.
-          mode: capture
-          run: assay run --policy policy.yaml -- pytest tests/
+          # Run the test command under `assay sandbox` (Landlock, observe + record);
+          # the action lints the resulting evidence bundle. Omit to only verify
+          # pre-existing bundles matched by `bundles`.
+          sandbox-command: pytest tests/
           bundles: ".assay/evidence/*.tar.gz"
           baseline_key: ${{ github.event.repository.name }}
           write_baseline: ${{ github.ref == 'refs/heads/main' }}
           fail_on: error
+          # Optional: sign the evidence bundle as an in-toto/DSSE attestation.
+          # attest-key: ${{ secrets.ASSAY_SIGNING_KEY }}

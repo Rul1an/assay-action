@@ -47,11 +47,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Capture and review agent tool-call evidence
-        uses: Rul1an/assay-action@v2
+      - name: Run under sandbox and review agent tool-call evidence
+        uses: Rul1an/assay-action@v3
         with:
-          mode: capture
-          run: assay run --policy policy.yaml -- pytest tests/
+          # Runs the command under `assay sandbox` (Landlock) and lints the
+          # resulting evidence bundle. On @v2 this was `mode: capture` + `run:`.
+          sandbox-command: pytest tests/
           bundles: ".assay/evidence/*.tar.gz"
           baseline_key: ${{ github.event.repository.name }}
           write_baseline: ${{ github.ref == 'refs/heads/main' }}
