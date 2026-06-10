@@ -412,7 +412,7 @@ No. This action reviews evidence artifacts that Assay already produced.
 
 **Is this only for MCP agents?**
 
-No. MCP policy enforcement is one sharp wedge, but the action only needs Assay
+No. MCP policy enforcement is one sharp use case, but the action only needs Assay
 evidence bundles. If your test run can produce a bundle, the review step is the
 same.
 
