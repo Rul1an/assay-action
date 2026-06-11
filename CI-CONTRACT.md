@@ -214,7 +214,28 @@ Proposed required context groups:
 - Sanitization guard.
 - Fork pull request contract.
 
-Exact names: to be filled from a live implementation PR.
+Observed from the CI baseline implementation PR `#22`:
+
+- `fingerprint-sim`
+- `capability-diff-sim`
+- `install-smoke`
+- `baseline-delta-pr`
+- `baseline-delta-trusted`
+
+Proposed required context names for the next branch-protection review:
+
+- `fingerprint-sim`
+- `capability-diff-sim`
+- `install-smoke`
+- `baseline-delta-pr`
+
+Do not require `baseline-delta-trusted` on pull requests. It is intentionally
+trusted-context only and skipped on PRs, so making it required would create a
+pending-forever or unavailable required check for fork traffic.
+
+External advisory checks such as secret-scanning app checks should not be added
+as required contexts unless the repository owner explicitly accepts their
+availability as a merge dependency.
 
 ## 7. Target Workflow Files
 
