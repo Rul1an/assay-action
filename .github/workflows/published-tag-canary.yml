@@ -1,0 +1,143 @@
+name: Published Tag Canary
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      assay_cli_version:
+        description: "Optional Assay CLI version override for manual triage; empty uses latest."
+        required: false
+        default: ""
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  assay-action-v3:
+    name: assay-action@v3 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout consumer repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Harden runner observe
+        if: runner.os == 'Linux'
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Resolve Assay CLI version
+        id: cli-version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.assay_cli_version }}
+        run: |
+          set -euo pipefail
+          version="${REQUESTED_VERSION:-latest}"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Run published action canary
+        id: canary
+        uses: Rul1an/assay-action@v3 # zizmor: ignore[unpinned-uses] intentionally validates the floating public major tag
+        with:
+          version: ${{ steps.cli-version.outputs.value }}
+          sarif: false
+          comment_diff: false
+          upload_artifacts: false
+          fail_on: error
+
+      - name: Assert published action installed the CLI
+        shell: bash
+        env:
+          SARIF_UPLOADED: ${{ steps.canary.outputs.sarif_uploaded }}
+        run: |
+          set -euo pipefail
+          assay --version
+          test "$SARIF_UPLOADED" = "false"
+
+      - name: Run v3 sandbox bundle canary
+        if: runner.os == 'Linux'
+        id: sandbox-canary
+        uses: Rul1an/assay-action@v3 # zizmor: ignore[unpinned-uses] intentionally validates the floating public major tag
+        with:
+          version: ${{ steps.cli-version.outputs.value }}
+          sandbox-command: "true"
+          sarif: false
+          comment_diff: false
+          upload_artifacts: false
+          fail_on: error
+
+      - name: Assert v3 bundle verify and SARIF
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          BUNDLE: ${{ runner.temp }}/assay-coding-agent.tar.gz
+          SARIF: ${{ runner.temp }}/assay-coding-agent.sarif
+        run: |
+          set -euo pipefail
+          test -f "$BUNDLE"
+          assay evidence verify "$BUNDLE"
+          assay evidence lint --format sarif "$BUNDLE" > "$SARIF"
+          python3 -m json.tool "$SARIF" >/dev/null
+
+  assay-action-v2:
+    name: assay-action@v2 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout consumer repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Harden runner observe
+        if: runner.os == 'Linux'
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Resolve Assay CLI version
+        id: cli-version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.assay_cli_version }}
+        run: |
+          set -euo pipefail
+          version="${REQUESTED_VERSION:-latest}"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Run legacy published action canary
+        id: canary
+        uses: Rul1an/assay-action@v2 # zizmor: ignore[unpinned-uses] intentionally validates the supported legacy floating tag
+        with:
+          version: ${{ steps.cli-version.outputs.value }}
+          mode: review
+          sarif: false
+          comment_diff: false
+          write_baseline: false
+          fail_on: error
+
+      - name: Assert legacy published action installed the CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          assay --version
