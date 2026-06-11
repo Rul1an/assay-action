@@ -159,8 +159,11 @@ pull requests.
   branch protection or rulesets without a separate context-capture review.
 - The first canary verifies that the published action resolves, installs the
   released Assay CLI on Ubuntu and macOS, and degrades cleanly when no evidence
-  bundles are present. Expanded fixture-bundle review belongs in a later canary
-  once the public bundle-generation path is stable across supported majors.
+  bundles are present. The `@v3` Linux lane also runs the public
+  `sandbox-command` path, verifies the produced bundle, and parses SARIF from
+  that bundle. The supported `@v2` legacy lane remains install/no-bundle only
+  because v2 uses a different capture interface and should not be forced through
+  the v3 sandbox path.
 - OpenSSF Scorecard for public supply-chain posture. The first implementation
   uses the default `GITHUB_TOKEN`, which can read repository rulesets but may
   not fully measure classic branch-protection or webhook settings unless a

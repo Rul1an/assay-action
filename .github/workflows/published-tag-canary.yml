@@ -68,6 +68,31 @@ jobs:
           assay --version
           test "$SARIF_UPLOADED" = "false"
 
+      - name: Run v3 sandbox bundle canary
+        if: runner.os == 'Linux'
+        id: sandbox-canary
+        uses: Rul1an/assay-action@v3 # zizmor: ignore[unpinned-uses] intentionally validates the floating public major tag
+        with:
+          version: ${{ steps.cli-version.outputs.value }}
+          sandbox-command: "true"
+          sarif: false
+          comment_diff: false
+          upload_artifacts: false
+          fail_on: error
+
+      - name: Assert v3 bundle verify and SARIF
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          BUNDLE: ${{ runner.temp }}/assay-coding-agent.tar.gz
+          SARIF: ${{ runner.temp }}/assay-coding-agent.sarif
+        run: |
+          set -euo pipefail
+          test -f "$BUNDLE"
+          assay evidence verify "$BUNDLE"
+          assay evidence lint --format sarif "$BUNDLE" > "$SARIF"
+          python3 -m json.tool "$SARIF" >/dev/null
+
   assay-action-v2:
     name: assay-action@v2 (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
