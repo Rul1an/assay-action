@@ -151,6 +151,16 @@ pull requests.
 - Weekly canary against the current floating major tag, `Rul1an/assay-action@v3`.
 - Weekly legacy canary against `Rul1an/assay-action@v2` while the legacy tag is
   intentionally supported.
+- The published-tag canary intentionally references the floating public major
+  tags for the action under test. That is the only unpinned action reference in
+  the workflow; checkout, Harden-Runner, and all scaffold actions remain pinned
+  to commit SHAs.
+- The canary is scheduled/manual and advisory only. It must not be added to
+  branch protection or rulesets without a separate context-capture review.
+- The first canary verifies that the published action resolves, installs the
+  released Assay CLI on Ubuntu and macOS, and degrades cleanly when no evidence
+  bundles are present. Expanded fixture-bundle review belongs in a later canary
+  once the public bundle-generation path is stable across supported majors.
 - OpenSSF Scorecard for public supply-chain posture. The first implementation
   uses the default `GITHUB_TOKEN`, which can read repository rulesets but may
   not fully measure classic branch-protection or webhook settings unless a
