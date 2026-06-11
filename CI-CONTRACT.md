@@ -86,6 +86,14 @@ Acceptable implementation patterns:
   logs are not public and untrusted pull request code cannot read the list.
 - On fork pull requests, run only the public-safe portion of the check.
 
+Required-gate split:
+
+- The structural portion is the fork-safe PR check.
+- The trusted hashed-list comparison runs only when the private hash source is
+  available.
+- The sanitizer workflow remains advisory until a future context-capture/import
+  review promotes its exact live check name.
+
 Logging contract:
 
 - Report only counts and locations, for example `3 matches in README.md:42`.
