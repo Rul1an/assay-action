@@ -21,31 +21,48 @@ on:
     # Weekly canary for GitHub runner, nested action, cache, and release-binary drift.
     - cron: "17 6 * * 1"
 
-permissions:
-  contents: read
-  actions: write
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   fingerprint-sim:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
 
       - name: Simulate v2 fingerprint stability
         run: bash scripts/sim_fingerprint.sh
 
   capability-diff-sim:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
 
       - name: Simulate experimental capability diff
         run: bash scripts/sim_capability_diff.sh
 
   install-smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
 
       - name: Exercise local action install path
         if: github.event_name == 'pull_request'
@@ -65,10 +82,16 @@ jobs:
           sarif: false
           comment_diff: false
 
-  baseline-delta:
+  baseline-delta-pr:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
 
       - name: Create deterministic evidence fixture
         shell: bash
@@ -106,7 +129,6 @@ jobs:
           echo "$PWD/bin" >> "$GITHUB_PATH"
 
       - name: Review deterministic evidence fixture with local action
-        if: github.event_name == 'pull_request'
         uses: ./
         with:
           bundles: ".assay/evidence/*.tar.gz"
@@ -114,10 +136,56 @@ jobs:
           sarif: false
           comment_diff: false
           baseline_key: action-sanity
-          write_baseline: ${{ github.ref == 'refs/heads/main' }}
+          write_baseline: false
+
+  baseline-delta-trusted:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Create deterministic evidence fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin .assay/evidence
+          touch .assay/evidence/noop.tar.gz
+          cat > bin/assay <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          if [ "${1:-}" = "--version" ]; then
+            echo "assay action-sanity"
+            exit 0
+          fi
+
+          if [ "${1:-}" = "evidence" ] && [ "${2:-}" = "verify" ]; then
+            exit 0
+          fi
+
+          if [ "${1:-}" = "evidence" ] && [ "${2:-}" = "lint" ] && [ "${3:-}" = "--format" ] && [ "${4:-}" = "json" ]; then
+            printf '%s\n' '{"findings":[]}'
+            exit 0
+          fi
+
+          if [ "${1:-}" = "evidence" ] && [ "${2:-}" = "lint" ] && [ "${3:-}" = "--format" ] && [ "${4:-}" = "sarif" ]; then
+            printf '%s\n' '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1/schema/sarif-schema-2.1.0.json","runs":[{"tool":{"driver":{"name":"Assay Action Sanity","informationUri":"https://github.com/Rul1an/assay-action"}},"results":[]}]}'
+            exit 0
+          fi
+
+          echo "unsupported assay sanity command: $*" >&2
+          exit 2
+          SH
+          chmod +x bin/assay
+          echo "$PWD/bin" >> "$GITHUB_PATH"
 
       - name: Review deterministic evidence fixture with released action
-        if: github.event_name != 'pull_request'
         uses: Rul1an/assay-action@v2
         with:
           bundles: ".assay/evidence/*.tar.gz"
