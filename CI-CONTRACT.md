@@ -234,6 +234,12 @@ Checked-in ruleset activation lives at
 keeps `.github/workflows/action-sanity.yml` always triggered on pull requests so
 these required contexts cannot disappear on docs-only or unrelated PRs.
 
+Import note: the checked-in ruleset is config-as-code only until imported in
+GitHub settings. Add `bypass_actors` only if the repository owner intentionally
+wants to preserve an admin bypass path; otherwise
+`strict_required_status_checks_policy: true` means merges must be rebased-current
+and green.
+
 Do not require `baseline-delta-trusted` on pull requests. It is intentionally
 trusted-context only and skipped on PRs, so making it required would create a
 pending-forever or unavailable required check for fork traffic.
