@@ -1,0 +1,46 @@
+{
+  "name": "main-required-ci-contexts",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": [
+        "~DEFAULT_BRANCH",
+        "refs/heads/release/*"
+      ],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "required_status_checks": [
+          {
+            "context": "fingerprint-sim",
+            "integration_id": 15368
+          },
+          {
+            "context": "capability-diff-sim",
+            "integration_id": 15368
+          },
+          {
+            "context": "install-smoke",
+            "integration_id": 15368
+          },
+          {
+            "context": "baseline-delta-pr",
+            "integration_id": 15368
+          }
+        ]
+      }
+    },
+    {
+      "type": "non_fast_forward"
+    },
+    {
+      "type": "deletion"
+    }
+  ]
+}
