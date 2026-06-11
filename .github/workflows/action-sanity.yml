@@ -2,20 +2,8 @@ name: Action Sanity
 
 on:
   pull_request:
-    paths:
-      - ".github/workflows/action-sanity.yml"
-      - "action.yml"
-      - "README.md"
-      - "examples/**"
-      - "scripts/**"
   push:
     branches: [main]
-    paths:
-      - ".github/workflows/action-sanity.yml"
-      - "action.yml"
-      - "README.md"
-      - "examples/**"
-      - "scripts/**"
   workflow_dispatch:
   schedule:
     # Weekly canary for GitHub runner, nested action, cache, and release-binary drift.
