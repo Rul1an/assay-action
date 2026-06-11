@@ -145,9 +145,11 @@ def should_scan(path: Path, root: Path) -> bool:
     if path.suffix.lower() in EXCLUDED_SUFFIXES:
         return False
     try:
+        if path.is_symlink():
+            return False
         if path.stat().st_size > TEXT_BYTES_LIMIT:
             return False
-    except FileNotFoundError:
+    except OSError:
         return False
     return True
 
@@ -276,9 +278,17 @@ def self_test() -> None:
         )
         (root / "dist").mkdir()
         (root / "dist" / "generated.txt").write_text(f"{marker}\n", encoding="utf-8")
-        findings = scan_files(
-            [root / "README.md", root / "dist" / "generated.txt"], root
-        )
+        files = [root / "README.md", root / "dist" / "generated.txt"]
+        outside = root.parent / "outside-marker.txt"
+        outside.write_text(f"{marker}\n", encoding="utf-8")
+        symlink = root / "linked-marker.txt"
+        try:
+            symlink.symlink_to(outside)
+        except (OSError, NotImplementedError):
+            pass
+        else:
+            files.append(symlink)
+        findings = scan_files(files, root)
         assert len(findings) == 1
         assert findings[0].path == Path("README.md")
         assert findings[0].category == "publication_blocker_marker"
