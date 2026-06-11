@@ -93,6 +93,11 @@ Required-gate split:
   available.
 - The sanitizer workflow remains advisory until a future context-capture/import
   review promotes its exact live check name.
+- The trusted list must enumerate every spelling, casing, and spacing variant of
+  a term. Normalization lowercases, splits on non-alphanumerics, and hashes
+  one-to-five-token windows per line, so a compound spelling and a spaced or
+  hyphenated spelling of the same term produce different hashes. Variant
+  completeness is a property of the trusted list, not the scanner.
 
 Logging contract:
 
