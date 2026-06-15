@@ -281,6 +281,7 @@ runs:
       shell: bash
       env:
         ASSAY_VERSION: ${{ inputs.version }}
+        GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
 
@@ -288,13 +289,18 @@ runs:
         REPO="Rul1an/assay"
 
         if [ "$VERSION" = "latest" ]; then
-          VERSION=$(curl \
-            --retry 3 \
-            --retry-delay 2 \
-            --retry-all-errors \
-            -fsSL \
-            -H "Accept: application/vnd.github+json" \
-            -H "User-Agent: assay-action-installer" \
+          CURL_ARGS=(
+            --retry 3
+            --retry-delay 2
+            --retry-all-errors
+            -fsSL
+            -H "Accept: application/vnd.github+json"
+            -H "User-Agent: assay-action-installer"
+          )
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            CURL_ARGS+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+          fi
+          VERSION=$(curl "${CURL_ARGS[@]}" \
             "https://api.github.com/repos/$REPO/releases/latest" \
             | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
             | head -n 1)
