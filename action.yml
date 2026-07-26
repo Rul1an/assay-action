@@ -81,7 +81,7 @@ inputs:
     required: false
     default: 'false'
   version:
-    description: 'Assay CLI version to install'
+    description: 'Assay CLI release tag to install'
     required: false
     default: 'latest'
 
@@ -234,16 +234,14 @@ runs:
     # E1: Foundation - Platform detection, caching, binary installation
     # =========================================================================
 
-    - name: Check if Assay already in PATH
+    - name: Resolve requested Assay version
       id: check-existing
       shell: bash
+      env:
+        ASSAY_VERSION_INPUT: ${{ inputs.version }}
+        GITHUB_TOKEN: ${{ github.token }}
       run: |
-        if command -v assay &> /dev/null; then
-          echo "Assay already installed: $(assay --version)"
-          echo "skip_install=true" >> $GITHUB_OUTPUT
-        else
-          echo "skip_install=false" >> $GITHUB_OUTPUT
-        fi
+        "$GITHUB_ACTION_PATH/resolve-version.sh" "$ASSAY_VERSION_INPUT"
 
     - name: Detect platform
       id: platform
@@ -275,57 +273,19 @@ runs:
         echo "os=$OS" >> $GITHUB_OUTPUT
         echo "arch=$ARCH" >> $GITHUB_OUTPUT
 
-    - name: Resolve Assay CLI version
-      id: resolve-version
-      if: steps.check-existing.outputs.skip_install != 'true'
-      shell: bash
-      env:
-        ASSAY_VERSION: ${{ inputs.version }}
-        GITHUB_TOKEN: ${{ github.token }}
-      run: |
-        set -euo pipefail
-
-        VERSION="$ASSAY_VERSION"
-        REPO="Rul1an/assay"
-
-        if [ "$VERSION" = "latest" ]; then
-          CURL_ARGS=(
-            --retry 3
-            --retry-delay 2
-            --retry-all-errors
-            -fsSL
-            -H "Accept: application/vnd.github+json"
-            -H "User-Agent: assay-action-installer"
-          )
-          if [ -n "${GITHUB_TOKEN:-}" ]; then
-            CURL_ARGS+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
-          fi
-          VERSION=$(curl "${CURL_ARGS[@]}" \
-            "https://api.github.com/repos/$REPO/releases/latest" \
-            | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-            | head -n 1)
-        fi
-
-        if [ -z "$VERSION" ]; then
-          echo "::error::Failed to resolve Assay CLI version"
-          exit 1
-        fi
-
-        echo "value=$VERSION" >> "$GITHUB_OUTPUT"
-
     - name: Restore cached binary
       id: cache
       if: steps.check-existing.outputs.skip_install != 'true'
       uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: ~/.assay/bin
-        key: assay-${{ steps.resolve-version.outputs.value }}-${{ steps.platform.outputs.target }}
+        key: assay-${{ steps.check-existing.outputs.resolved_version }}-${{ steps.platform.outputs.target }}
 
     - name: Install Assay CLI
       if: steps.check-existing.outputs.skip_install != 'true' && steps.cache.outputs.cache-hit != 'true'
       shell: bash
       env:
-        ASSAY_VERSION: ${{ steps.resolve-version.outputs.value }}
+        ASSAY_VERSION: ${{ steps.check-existing.outputs.resolved_version }}
         ASSAY_TARGET: ${{ steps.platform.outputs.target }}
       run: |
         set -euo pipefail
@@ -410,18 +370,10 @@ runs:
       id: verify-install
       if: steps.check-existing.outputs.skip_install != 'true'
       shell: bash
-      run: | # zizmor: ignore[github-env] v2 compatibility exports a literal install dir for later caller steps
-        # v2 compatibility: later caller steps may invoke `assay` directly.
-        # Keep exporting this literal install directory until a major-version contract change.
-        printf '%s\n' "$HOME/.assay/bin" >> "$GITHUB_PATH"
-        export PATH="$HOME/.assay/bin:$PATH"
-
-        if ! ~/.assay/bin/assay --version; then
-          echo "::error::Assay installation verification failed"
-          exit 1
-        fi
-
-        echo "installed=true" >> $GITHUB_OUTPUT
+      env:
+        EXPECTED_VERSION: ${{ steps.check-existing.outputs.resolved_version_plain }}
+      run: | # zizmor: ignore[github-env] v2 compatibility exports the install dir for caller steps
+        "$GITHUB_ACTION_PATH/verify-install.sh" "$HOME/.assay/bin/assay" "$EXPECTED_VERSION"
 
     # =========================================================================
     # E2: Evidence Processing - Discovery, verify, lint

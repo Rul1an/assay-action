@@ -33,6 +33,16 @@ current action. The older `@v2` "Evidence Artifacts" line, which had `mode`/`run
 inputs this action does not carry, remains available for workflows that depend on
 it.
 
+### v3.0.2 install hardening
+
+The Action accepts explicit software release tags, including the published
+historical aliases `v1`, `v2`, and `v2.1`. The `v2` software release published
+Linux assets only, so the installer rejects that alias on macOS; use `v2.1` or a
+newer release there. When `version: latest` is used, the Action requires
+GitHub's latest release to be a stable `vMAJOR.MINOR.PATCH` software tag. The
+downloaded checksum-bound binary must exit successfully and report the exact
+version selected by that tag before the Action continues.
+
 Assay's own repository tests this action shape in CI with repo-local evidence
 bundles. Use it alongside eval tools such as Promptfoo or similar CI eval
 tooling: they help score output quality; Assay preserves and reviews the tested
