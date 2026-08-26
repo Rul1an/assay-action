@@ -536,6 +536,23 @@ test_finalize_mapping() {
   DISCOVER_OUTCOME="cancelled" run_finalize "$out"
   refuse_output "$out" "evidence_state=absent" || { fail "finalize manufactured absent on cancelled discover"; return; }
 
+  out="$TMP_DIR/finalize-failed-empty.txt"
+  : >"$out"
+  DISCOVER_OUTCOME="failure" DISCOVER_FOUND="" PROCESS_VERIFIED="" \
+    INDEX_PATH="" INDEX_DIGEST="" run_finalize "$out"
+  refuse_output "$out" "evidence_state=absent" || {
+    fail "finalize manufactured absent when discover failed before completing"
+    return
+  }
+  refuse_output "$out" "evidence_state=" || {
+    fail "finalize wrote evidence_state after a failed incomplete discover"
+    return
+  }
+  refuse_output "$out" "verified=" || {
+    fail "finalize wrote verified after a failed incomplete discover"
+    return
+  }
+
   out="$TMP_DIR/finalize-absent.txt"
   : >"$out"
   DISCOVER_OUTCOME="success" DISCOVER_FOUND="false" PROCESS_VERIFIED="" \
@@ -1046,6 +1063,29 @@ p.write_text(text.replace(
 PY
 }
 
+mut_manufacture_absent_on_failed_empty() {
+  python3 - "$INDEX_SH" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+old = '''  if [[ "${DISCOVER_FOUND:-}" == "" ]]; then
+    exit 0
+  fi'''
+if old not in text:
+    raise SystemExit("empty DISCOVER_FOUND guard not found")
+p.write_text(text.replace(
+    old,
+    '''  if [[ "${DISCOVER_FOUND:-}" == "" ]]; then
+    emit "evidence_state=absent"
+    emit "verified=false"
+    exit 0
+  fi''',
+    1,
+))
+PY
+}
+
 mut_flip_verified_after_integrity() {
   python3 - "$ACTION" <<'PY'
 from pathlib import Path
@@ -1204,6 +1244,7 @@ run_mutations() {
   mutate_expect_fail "unknown-mode-accepted" mut_unknown_mode
   mutate_expect_fail "empty-mode-defaults-optional" mut_empty_mode_defaults_optional
   mutate_expect_fail "manufacture-absent" mut_manufacture_absent
+  mutate_expect_fail "manufacture-absent-on-failed-empty" mut_manufacture_absent_on_failed_empty
   mutate_expect_fail "flip-verified-after-integrity" mut_flip_verified_after_integrity
   mutate_expect_fail "allow-101st" mut_allow_101
   mutate_expect_fail "accept-between-index-mutation" mut_skip_assert

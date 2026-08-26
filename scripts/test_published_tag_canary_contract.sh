@@ -77,12 +77,15 @@ assert_canary_contract() {
         run.include?("rev-parse HEAD") &&
         !run.include?("candidate-action") &&
         (run.include?("ref_name") || run.include?("REF_NAME") || run.include?("GITHUB_REF_NAME")) &&
-        run.match?(/v3\\\.\[0-9\]\+|v3\.x\.y|\^v3\\/)
+        run.match?(/v3\\\.\[0-9\]\+|v3\.x\.y|\^v3\\/) &&
+        (run.include?(%q{test "$actual" = "$EXPECTED_SHA"}) ||
+         run.include?(%q{test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"}))
     end
     abort("candidate job must bind HEAD to expected_sha and the v3.x.y tag name") if bind.nil?
 
     run = steps.find { |step| step["uses"] == "./" }
     abort("candidate job must execute uses: ./") if run.nil?
+    abort("bind step must run before uses: ./") if steps.index(bind) >= steps.index(run)
     abort("candidate uses: must not be a floating tag") if
       steps.any? { |step| step["uses"].to_s.start_with?("Rul1an/assay-action@") }
     abort("candidate uses: must not be ./candidate-action") if
@@ -98,8 +101,10 @@ assert_canary_contract() {
     end
     abort("candidate job must assert evidence outputs from uses: ./") if assert_step.nil?
     body = assert_step.fetch("run")
-    abort("candidate assert must recompute the index digest") unless
-      body.include?("sha256") || body.include?("shasum")
+    abort("candidate assert must compare a recomputed digest to the supplied digest arg") unless
+      body.match?(/sha256\([^)]*\)\.hexdigest\(\)\s*==\s*sys\.argv\[2\]/)
+    abort("candidate assert must pass INDEX_PATH into the digest check") unless
+      body.match?(/\x27\s+"\$INDEX_PATH"\s+"\$INDEX_DIGEST"/)
     abort("candidate assert must parse complete and bundles") unless
       body.include?("complete") && body.include?("bundles")
   ' "$workflow"
@@ -203,6 +208,80 @@ p.write_text(text.replace(needle, "unused_digest", 1))
 PY
 }
 
+mut_bind_after_run() {
+  python3 - "$CANARY" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+marker = "  assay-action-candidate:"
+idx = text.find(marker)
+if idx < 0:
+    raise SystemExit("candidate job missing")
+head, tail = text[:idx], text[idx:]
+bind = "      - name: Bind dispatch tag and SHA\n"
+run = "      - name: Run immutable candidate action\n"
+b = tail.find(bind)
+r = tail.find(run)
+if b < 0 or r < 0 or b > r:
+    raise SystemExit("bind/run order not found")
+# Move the bind step block to after the run step's `with:` block ends
+# at the next step named Assert.
+assert_at = tail.find("      - name: Assert candidate evidence outputs\n")
+if assert_at < 0:
+    raise SystemExit("assert step missing")
+bind_block = tail[b:r]
+without_bind = tail[:b] + tail[r:assert_at]
+p.write_text(head + without_bind + bind_block + tail[assert_at:])
+PY
+}
+
+mut_echo_instead_of_sha_compare() {
+  python3 - "$CANARY" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+old = '          test "$actual" = "$EXPECTED_SHA"'
+if old not in text:
+    raise SystemExit("sha compare missing")
+p.write_text(text.replace(old, '          echo "$actual"', 1))
+PY
+}
+
+mut_digest_mention_only() {
+  python3 - "$CANARY" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+old = "          assert hashlib.sha256(raw).hexdigest() == sys.argv[2]"
+if old not in text:
+    raise SystemExit("digest equality missing")
+p.write_text(text.replace(old, "          hashlib.sha256  # mention only", 1))
+PY
+}
+
+mut_hardcode_index_path() {
+  python3 - "$CANARY" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+old = """          ' "$INDEX_PATH" "$INDEX_DIGEST"
+"""
+if old not in text:
+    raise SystemExit("INDEX_PATH consume missing")
+p.write_text(
+    text.replace(
+        old,
+        '          \' ".assay-reports/evidence-index.json" "$INDEX_DIGEST"\n',
+        1,
+    )
+)
+PY
+}
+
 main() {
   TMP_DIR="$(mktemp -d)"
   trap 'cp -f "$TMP_DIR/canary.yml.bak" "$CANARY" 2>/dev/null || true; rm -rf "$TMP_DIR"' EXIT
@@ -230,6 +309,10 @@ main() {
     mutate_expect_fail "candidate-uses-floating-v3" mut_candidate_uses_v3
     mutate_expect_fail "drop-sha-bind" mut_drop_sha_bind
     mutate_expect_fail "drop-output-asserts" mut_drop_output_asserts
+    mutate_expect_fail "bind-after-run" mut_bind_after_run
+    mutate_expect_fail "echo-instead-of-sha-compare" mut_echo_instead_of_sha_compare
+    mutate_expect_fail "digest-mention-only" mut_digest_mention_only
+    mutate_expect_fail "hardcode-index-path" mut_hardcode_index_path
   fi
 
   echo "published-tag canary contract passed"
