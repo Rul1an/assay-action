@@ -285,7 +285,66 @@ assert_action_wiring() {
   ' "$action_file"
 }
 
+assert_fail_on_gate() {
+  local action_file="$1"
+  # shellcheck disable=SC2016 # Ruby compares literal composite-action expressions.
+  ruby -ryaml -e '
+    action = YAML.safe_load_file(ARGV.fetch(0), aliases: true)
+    steps = action.fetch("runs").fetch("steps")
+    by_id = {}
+    steps.each do |step|
+      id = step["id"]
+      next if id.nil?
+      abort("duplicate step id #{id}") if by_id.key?(id)
+      by_id[id] = step
+    end
+
+    check = by_id.fetch("check-existing")
+    env = check.fetch("env")
+    abort("version-resolution step still exposes GITHUB_TOKEN") if env.key?("GITHUB_TOKEN")
+    abort("version-resolution lost ASSAY_VERSION_INPUT") unless
+      env == { "ASSAY_VERSION_INPUT" => "${{ inputs.version }}" }
+
+    process_run = by_id.fetch("process").fetch("run")
+    abort("bundle gate still has a local fail_on case") if process_run.include?(%q{case "$FAIL_ON"})
+    abort("bundle lint must forward --fail-on \"$FAIL_ON\" to the CLI") unless
+      process_run.include?(%q{--fail-on "$FAIL_ON"})
+    abort("bundle lint must collect CLI gate hits") unless process_run.include?("GATE_HITS")
+    abort("unrecognized fail_on must fail closed (Action exit 2)") unless
+      process_run.include?("exit 2") && process_run.include?("Could not apply fail_on=")
+    abort("bundle gate must not call apply_fail_on.sh") if process_run.include?("apply_fail_on.sh")
+
+    fail_on = action.fetch("inputs").fetch("fail_on")
+    abort("fail_on description must name the warning alias") unless
+      fail_on.fetch("description").include?("warning")
+    abort("fail_on default changed") unless fail_on.fetch("default") == "error"
+
+    pack = by_id.fetch("pack-lint")
+    abort("pack-lint must receive FAIL_ON") unless
+      pack.fetch("env")["FAIL_ON"] == "${{ inputs.fail_on }}"
+    pack_run = pack.fetch("run")
+    abort("pack-lint must keep --fail-on none for load/config isolation") unless
+      pack_run.include?("--fail-on none")
+    abort("pack-lint must second-pass --fail-on \"$FAIL_ON\" --pack to the CLI") unless
+      pack_run.include?(%q{--fail-on "$FAIL_ON"}) && pack_run.include?("--pack")
+    abort("pack-lint must collect CLI pack gate hits") unless pack_run.include?("PACK_GATE_HITS")
+    abort("pack gate must not call apply_fail_on.sh") if pack_run.include?("apply_fail_on.sh")
+    abort("pack gate must not count SARIF levels") if pack_run.include?(%q{select((.level // "warning")})
+
+    install = steps.find { |step| step["name"] == "Install Assay CLI" }
+    abort("missing Install Assay CLI step") if install.nil?
+    install_run = install.fetch("run")
+    %w[--retry\ 3 --retry-delay\ 2 --retry-all-errors User-Agent:\ assay-action-installer].each do |needle|
+      abort("archive download lost #{needle}") unless install_run.include?(needle)
+    end
+    curl_uses = install_run.scan(/curl "\$\{CURL_ARGS\[@\]\}"/)
+    abort("expected both archive downloads to use CURL_ARGS, found #{curl_uses.length}") unless
+      curl_uses.length == 2
+  ' "$action_file"
+}
+
 assert_action_wiring "$REPO_ROOT/action.yml"
+assert_fail_on_gate "$REPO_ROOT/action.yml"
 cp "$REPO_ROOT/action.yml" "$TMP_DIR/action-mutated.yml"
 # shellcheck disable=SC2016 # Mutate the literal command for the negative wiring test.
 sed -i.bak \
@@ -325,6 +384,21 @@ sed -i.bak '/id: check-existing/a\
 ' "$TMP_DIR/action-resolver-if-mutated.yml"
 if assert_action_wiring "$TMP_DIR/action-resolver-if-mutated.yml"; then
   echo "action wiring accepted a conditional version resolver" >&2
+  exit 1
+fi
+
+cp "$REPO_ROOT/action.yml" "$TMP_DIR/action-fail-on-mutated.yml"
+# shellcheck disable=SC2016 # Drop the CLI-owned threshold so the negative test can see it.
+sed -i.bak 's/--fail-on "\$FAIL_ON"//' "$TMP_DIR/action-fail-on-mutated.yml"
+if assert_fail_on_gate "$TMP_DIR/action-fail-on-mutated.yml"; then
+  echo "fail_on gate accepted a missing CLI --fail-on forward" >&2
+  exit 1
+fi
+
+cp "$REPO_ROOT/action.yml" "$TMP_DIR/action-pack-gate-mutated.yml"
+sed -i.bak '/PACK_GATE_HITS/d' "$TMP_DIR/action-pack-gate-mutated.yml"
+if assert_fail_on_gate "$TMP_DIR/action-pack-gate-mutated.yml"; then
+  echo "fail_on gate accepted a missing pack second pass" >&2
   exit 1
 fi
 
