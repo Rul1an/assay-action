@@ -17,6 +17,75 @@ pass() {
   echo "PASS: $*"
 }
 
+# Fixture SHA strings only. This does not create or move a v3.1.0 tag.
+BIND_HEAD_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+BIND_WRONG_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+install_bind_git_stub() {
+  local bin="$TMP_DIR/bind-git"
+  mkdir -p "$bin"
+  cat >"$bin/git" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "rev-parse" ] && [ "${2:-}" = "HEAD" ]; then
+  printf '%s\n' "${STUB_HEAD_SHA:?}"
+  exit 0
+fi
+echo "unexpected git invocation: $*" >&2
+exit 2
+SH
+  chmod +x "$bin/git"
+}
+
+extract_bind_run_body() {
+  local workflow="$1"
+  local dest="$2"
+  # shellcheck disable=SC2016 # Ruby compares literal workflow expressions.
+  ruby -ryaml -e '
+    w = YAML.safe_load_file(ARGV.fetch(0), aliases: true)
+    steps = w.fetch("jobs").fetch("assay-action-candidate").fetch("steps")
+    bind = steps.find do |step|
+      env = step["env"] || {}
+      run = step.fetch("run", "")
+      env.value?("${{ inputs.expected_sha }}") && run.include?("rev-parse HEAD")
+    end
+    abort("bind step missing") if bind.nil?
+    File.write(ARGV.fetch(1), bind.fetch("run"))
+  ' "$workflow" "$dest"
+}
+
+run_extracted_bind_body() {
+  local body="$1"
+  local expected="$2"
+  local ref_name="$3"
+  local ref_type="$4"
+  EXPECTED_SHA="$expected" \
+    REF_NAME="$ref_name" \
+    REF_TYPE="$ref_type" \
+    STUB_HEAD_SHA="$BIND_HEAD_SHA" \
+    PATH="$TMP_DIR/bind-git:$PATH" \
+    bash "$body"
+}
+
+assert_bind_run_executes() {
+  local workflow="$1"
+  local body="$TMP_DIR/bind-run.sh"
+  extract_bind_run_body "$workflow" "$body" || return 1
+  install_bind_git_stub
+
+  if run_extracted_bind_body "$body" "$BIND_WRONG_SHA" "v3.1.0" "tag"; then
+    echo "bind run accepted tag v3.1.0 with a wrong EXPECTED_SHA" >&2
+    return 1
+  fi
+  if run_extracted_bind_body "$body" "$BIND_HEAD_SHA" "v3.1.0-rc1" "tag"; then
+    echo "bind run accepted prerelease tag v3.1.0-rc1" >&2
+    return 1
+  fi
+  if run_extracted_bind_body "$body" "$BIND_HEAD_SHA" "v3.1.0" "branch"; then
+    echo "bind run accepted REF_TYPE=branch" >&2
+    return 1
+  fi
+}
+
 assert_canary_contract() {
   local workflow="$1"
   # shellcheck disable=SC2016 # Ruby compares literal workflow expressions.
@@ -107,7 +176,8 @@ assert_canary_contract() {
       body.match?(/\x27\s+"\$INDEX_PATH"\s+"\$INDEX_DIGEST"/)
     abort("candidate assert must parse complete and bundles") unless
       body.include?("complete") && body.include?("bundles")
-  ' "$workflow"
+  ' "$workflow" || return 1
+  assert_bind_run_executes "$workflow"
 }
 
 mutate_expect_fail() {
@@ -282,6 +352,54 @@ p.write_text(
 PY
 }
 
+mut_sha_compare_or_true() {
+  python3 - "$CANARY" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+old = '          test "$actual" = "$EXPECTED_SHA"'
+if old not in text:
+    raise SystemExit("sha compare missing")
+p.write_text(text.replace(old, old + " || true", 1))
+PY
+}
+
+mut_loose_tag_regex() {
+  python3 - "$CANARY" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+old = r'          [[ "$REF_NAME" =~ ^v3\.[0-9]+\.[0-9]+$ ]]'
+if old not in text:
+    raise SystemExit("tag regex missing")
+p.write_text(text.replace(old, r'          [[ "$REF_NAME" =~ ^v3\.[0-9]+\.[0-9]+ ]]', 1))
+PY
+}
+
+mut_bind_set_plus_e() {
+  python3 - "$CANARY" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+old = """          set -euo pipefail
+          test \"$REF_TYPE\" = \"tag\""""
+if old not in text:
+    raise SystemExit("bind set -euo block missing")
+p.write_text(
+    text.replace(
+        old,
+        """          set -euo pipefail
+          set +e
+          test \"$REF_TYPE\" = \"tag\"""",
+        1,
+    )
+)
+PY
+}
+
 main() {
   TMP_DIR="$(mktemp -d)"
   trap 'cp -f "$TMP_DIR/canary.yml.bak" "$CANARY" 2>/dev/null || true; rm -rf "$TMP_DIR"' EXIT
@@ -313,7 +431,16 @@ main() {
     mutate_expect_fail "echo-instead-of-sha-compare" mut_echo_instead_of_sha_compare
     mutate_expect_fail "digest-mention-only" mut_digest_mention_only
     mutate_expect_fail "hardcode-index-path" mut_hardcode_index_path
+    mutate_expect_fail "sha-compare-or-true" mut_sha_compare_or_true
+    mutate_expect_fail "loose-tag-regex" mut_loose_tag_regex
+    mutate_expect_fail "bind-set-plus-e" mut_bind_set_plus_e
   fi
+
+  if ! assert_canary_contract "$CANARY"; then
+    echo "no-op control failed after mutations" >&2
+    exit 1
+  fi
+  echo "MUTATION CONTROL: no-op stayed green after mutations"
 
   echo "published-tag canary contract passed"
 }

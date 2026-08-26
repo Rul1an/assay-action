@@ -1,7 +1,8 @@
 {
   "name": "main-required-ci-contexts",
+  "note": "Local inventory of live required check contexts. Not an imported GitHub ruleset; live main protection is operator-managed.",
   "target": "branch",
-  "enforcement": "active",
+  "enforcement": "inventory",
   "conditions": {
     "ref_name": {
       "include": [
@@ -31,6 +32,14 @@
           },
           {
             "context": "baseline-delta-pr",
+            "integration_id": 15368
+          },
+          {
+            "context": "Public Artifact Sanitization",
+            "integration_id": 15368
+          },
+          {
+            "context": "required-zero-pr",
             "integration_id": 15368
           }
         ]

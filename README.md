@@ -28,10 +28,16 @@ inputs:
 - `attest-key` — sign the bundle's manifest as an in-toto/DSSE attestation via
   `assay evidence attest`, exposed as the `attestation_envelope` output.
 
-Both are off by default, so existing workflows keep working. Pin `@v3` for the
-current action. The older `@v2` "Evidence Artifacts" line, which had `mode`/`run`
-inputs this action does not carry, remains available for workflows that depend on
-it.
+Both are off by default. Pin `@v3` for the current action. The older `@v2`
+"Evidence Artifacts" line, which had `mode`/`run` inputs this action does not
+carry, remains available for workflows that depend on it.
+
+When `sandbox-command` is set, the action writes the sandbox bundle into the
+workspace at `.assay/sandbox-command/evidence.tar.gz` and includes that file in
+the same verify and lint path as discovered bundles. A verify failure or a lint
+finding at `fail_on` can fail the job. Earlier v3 releases linted the sandbox
+bundle from the runner temp directory only and did not put it on that path, so
+the same command could finish green.
 
 ### v3.0.2 install hardening
 

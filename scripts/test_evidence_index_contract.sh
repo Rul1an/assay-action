@@ -202,6 +202,12 @@ assert_action_evidence_wiring() {
     abort("finalize-evidence must run if: always()") unless finalize["if"] == "always()"
     abort("finalize must receive discover.outcome") unless
       finalize.fetch("env")["DISCOVER_OUTCOME"] == "${{ steps.discover.outcome }}"
+    abort("finalize must receive INDEX_PATH from process or discover") unless
+      finalize.fetch("env")["INDEX_PATH"] ==
+        "${{ steps.process.outputs.evidence_index_path || steps.discover.outputs.evidence_index_path }}"
+    abort("finalize must receive INDEX_DIGEST from process or discover") unless
+      finalize.fetch("env")["INDEX_DIGEST"] ==
+        "${{ steps.process.outputs.evidence_index_digest || steps.discover.outputs.evidence_index_digest }}"
     finalize_run = finalize.fetch("run")
     abort("finalize must call build_evidence_index.sh finalize") unless
       finalize_run.include?("build_evidence_index.sh") && finalize_run.include?("finalize")
@@ -382,6 +388,34 @@ test_required_zero() {
   pass "required + zero fails closed with absent"
 }
 
+test_100_bundles_at_cap() {
+  local ws bundles out i
+  ws="$(new_workspace)"
+  bundles="$ws/bundles.txt"
+  : >"$bundles"
+  for i in $(seq 1 100); do
+    write_bundle "$ws/.assay/evidence/b$(printf '%03d' "$i").tar.gz" "payload-$i"
+    printf '%s\n' ".assay/evidence/b$(printf '%03d' "$i").tar.gz" >>"$bundles"
+  done
+  out="$ws/out.txt"
+  : >"$out"
+  if ! run_index "$ws" "optional" "$bundles" "" "$out" >"$ws/log.txt" 2>&1; then
+    fail "exactly 100 bundles failed the index step"
+    return
+  fi
+  require_output "$out" "count=100" || { fail "exactly 100 bundles lost count=100"; return; }
+  if ! python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert len(d["bundles"]) == 100, len(d["bundles"])
+' "$ws/.assay-reports/evidence-index.json"
+  then
+    fail "exactly 100 bundles did not write 100 index rows"
+    return
+  fi
+  pass "exactly 100 bundles index with count=100"
+}
+
 test_101st_fail_closed() {
   local ws bundles out i
   ws="$(new_workspace)"
@@ -495,6 +529,18 @@ test_determinism() {
     fail "index bytes were not deterministic"
     return
   fi
+  rm -f "$ws/.assay-reports/evidence-index.json"
+  printf '%s\n' ".assay/evidence/a.tar.gz" ".assay/evidence/b.tar.gz" >"$bundles"
+  out="$ws/out3.txt"
+  : >"$out"
+  if ! run_index "$ws" "optional" "$bundles" "" "$out"; then
+    fail "reversed-order determinism run failed"
+    return
+  fi
+  if ! cmp -s "$ws/index-a.json" "$ws/.assay-reports/evidence-index.json"; then
+    fail "reversed bundle order changed index bytes"
+    return
+  fi
   pass "index bytes and digest are deterministic"
 }
 
@@ -560,6 +606,14 @@ test_finalize_mapping() {
     run_finalize "$out"
   require_output "$out" "evidence_state=absent" || { fail "finalize lost absent after a real empty discover"; return; }
   require_output "$out" "verified=false" || { fail "finalize lost verified=false for absent"; return; }
+  require_output "$out" "evidence_index_path=.assay-reports/evidence-index.json" || {
+    fail "finalize lost INDEX_PATH for absent"
+    return
+  }
+  require_output "$out" "evidence_index_digest=abc" || {
+    fail "finalize lost INDEX_DIGEST for absent"
+    return
+  }
 
   out="$TMP_DIR/finalize-discovered.txt"
   : >"$out"
@@ -568,6 +622,14 @@ test_finalize_mapping() {
     run_finalize "$out"
   require_output "$out" "evidence_state=discovered" || { fail "finalize lost discovered before integrity"; return; }
   require_output "$out" "verified=false" || { fail "finalize lost verified=false for discovered"; return; }
+  require_output "$out" "evidence_index_path=.assay-reports/evidence-index.json" || {
+    fail "finalize lost INDEX_PATH for discovered"
+    return
+  }
+  require_output "$out" "evidence_index_digest=abc" || {
+    fail "finalize lost INDEX_DIGEST for discovered"
+    return
+  }
 
   out="$TMP_DIR/finalize-verified.txt"
   : >"$out"
@@ -577,6 +639,14 @@ test_finalize_mapping() {
     run_finalize "$out"
   require_output "$out" "evidence_state=verified" || { fail "post-integrity pack failure lost evidence_state=verified"; return; }
   require_output "$out" "verified=true" || { fail "post-integrity pack failure flipped verified false"; return; }
+  require_output "$out" "evidence_index_path=.assay-reports/evidence-index.json" || {
+    fail "finalize lost INDEX_PATH for verified"
+    return
+  }
+  require_output "$out" "evidence_index_digest=abc" || {
+    fail "finalize lost INDEX_DIGEST for verified"
+    return
+  }
 
   out="$TMP_DIR/finalize-rejected.txt"
   : >"$out"
@@ -585,6 +655,14 @@ test_finalize_mapping() {
     run_finalize "$out"
   require_output "$out" "evidence_state=rejected" || { fail "integrity failure lost rejected"; return; }
   require_output "$out" "verified=false" || { fail "integrity failure lost verified=false"; return; }
+  require_output "$out" "evidence_index_path=.assay-reports/evidence-index.json" || {
+    fail "finalize lost INDEX_PATH for rejected"
+    return
+  }
+  require_output "$out" "evidence_index_digest=abc" || {
+    fail "finalize lost INDEX_DIGEST for rejected"
+    return
+  }
   pass "finalize mapping preserves absent/discovered/verified/rejected"
 }
 
@@ -914,6 +992,7 @@ test_discovery_find_failure() {
 }
 
 run_positive_suite() {
+  failed=0
   require_file "$INDEX_SH"
   require_file "$ACTION"
   require_file "$SANITY"
@@ -930,6 +1009,7 @@ run_positive_suite() {
   test_discover_empty_mode_fails_closed
   test_optional_zero
   test_required_zero
+  test_100_bundles_at_cap
   test_101st_fail_closed
   test_sandbox_parity
   test_mutation_between_index_and_verify
@@ -1276,6 +1356,14 @@ run_mutations() {
   mutate_expect_fail "restore-find-or-true" mut_restore_find_or_true
   mutate_expect_fail "hardcode-complete-true" mut_hardcode_complete_true
   mutate_expect_fail "seal-digest-constant" mut_seal_digest_constant
+
+  restore_canonical
+  if ! run_positive_suite >"$TMP_DIR/mutation-noop-last.log" 2>&1; then
+    echo "no-op control failed after mutations" >&2
+    cat "$TMP_DIR/mutation-noop-last.log" >&2
+    return 1
+  fi
+  echo "MUTATION CONTROL: no-op stayed green after mutations"
 }
 
 main() {
