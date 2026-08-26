@@ -38,6 +38,9 @@ jobs:
       - name: Verify evidence index contract
         run: bash scripts/test_evidence_index_contract.sh
 
+      - name: Verify published-tag canary contract
+        run: bash scripts/test_published_tag_canary_contract.sh
+
   capability-diff-sim:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -86,6 +89,15 @@ jobs:
           test -n "$INDEX_PATH"
           test -n "$INDEX_DIGEST"
           test -f "$INDEX_PATH"
+          python3 -c '
+          import hashlib, json, sys
+          path = sys.argv[1]
+          raw = open(path, "rb").read()
+          d = json.loads(raw)
+          assert d["complete"] is True
+          assert d["bundles"] == []
+          assert hashlib.sha256(raw).hexdigest() == sys.argv[2]
+          ' "$INDEX_PATH" "$INDEX_DIGEST"
 
       - name: Exercise released action install path
         if: github.event_name != 'pull_request'
@@ -95,6 +107,53 @@ jobs:
           fail_on: error
           sarif: false
           comment_diff: false
+
+  required-zero-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Exercise required mode with zero bundles
+        id: required-zero
+        continue-on-error: true
+        uses: ./
+        with:
+          evidence_mode: required
+          bundles: ".assay/evidence/*.tar.gz"
+          fail_on: error
+          sarif: false
+          comment_diff: false
+
+      - name: Assert required-zero composite failure
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.required-zero.outcome }}
+          EVIDENCE_STATE: ${{ steps.required-zero.outputs.evidence_state }}
+          VERIFIED: ${{ steps.required-zero.outputs.verified }}
+          INDEX_PATH: ${{ steps.required-zero.outputs.evidence_index_path }}
+          INDEX_DIGEST: ${{ steps.required-zero.outputs.evidence_index_digest }}
+        run: |
+          set -euo pipefail
+          test "$OUTCOME" = "failure"
+          test "$EVIDENCE_STATE" = "absent"
+          test "$VERIFIED" = "false"
+          test -n "$INDEX_DIGEST"
+          test -f "$INDEX_PATH"
+          python3 -c '
+          import hashlib, json, sys
+          path = sys.argv[1]
+          raw = open(path, "rb").read()
+          d = json.loads(raw)
+          assert d["complete"] is True
+          assert d["bundles"] == []
+          assert hashlib.sha256(raw).hexdigest() == sys.argv[2]
+          ' "$INDEX_PATH" "$INDEX_DIGEST"
 
   baseline-delta-pr:
     if: github.event_name == 'pull_request'

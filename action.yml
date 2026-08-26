@@ -55,7 +55,8 @@ inputs:
   evidence_mode:
     description: |
       Whether discovery must find at least one evidence bundle: optional or required.
-      Default remains optional. An unrecognized value fails closed.
+      Default remains optional and is declared only here. Empty, whitespace-only,
+      and unrecognized values fail closed.
     required: false
     default: 'optional'
   sarif:
@@ -174,7 +175,9 @@ outputs:
     description: 'true if all indexed bundles passed integrity verification'
     value: ${{ steps.finalize-evidence.outputs.verified }}
   evidence_state:
-    description: 'absent, discovered, verified, or rejected. Empty until discovery runs.'
+    description: |
+      absent, discovered, verified, or rejected. Empty when discovery produced no
+      determination — it never ran, or it failed before indexing completed.
     value: ${{ steps.finalize-evidence.outputs.evidence_state }}
   evidence_index_path:
     description: 'Workspace-relative path to the bounded evidence index'
@@ -445,7 +448,7 @@ runs:
 
         mkdir -p "${GITHUB_WORKSPACE}/.assay-reports"
         WORKSPACE="${GITHUB_WORKSPACE}" \
-          EVIDENCE_MODE="${EVIDENCE_MODE:-optional}" \
+          EVIDENCE_MODE="${EVIDENCE_MODE}" \
           BUNDLES_FILE="$RAW" \
           SANDBOX_BUNDLE="${SANDBOX_BUNDLE:-}" \
           INDEX_PATH="${GITHUB_WORKSPACE}/.assay-reports/evidence-index.json" \

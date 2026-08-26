@@ -80,7 +80,7 @@ print(os.path.relpath(full, workspace).replace("\\", "/"))
 complete_from_rows_py() {
   cat <<'PY'
 def complete_from_rows(rows):
-    return bool(rows) and all(
+    return all(
         r.get("integrity") in ("verified", "rejected") for r in rows
     )
 
@@ -116,10 +116,10 @@ with open(sys.argv[2], 'w', encoding='ascii') as handle:
 }
 
 validate_mode() {
-  case "${EVIDENCE_MODE:-optional}" in
+  case "${EVIDENCE_MODE:-}" in
     optional|required) ;;
     *)
-      die_config "Unknown evidence_mode '${EVIDENCE_MODE}'. Allowed: optional, required."
+      die_config "Unknown evidence_mode '${EVIDENCE_MODE:-}'. Allowed: optional, required."
       ;;
   esac
 }
@@ -208,7 +208,7 @@ cmd_index() {
     emit "found=false"
     emit "evidence_state=absent"
     emit "verified=false"
-    if [[ "${EVIDENCE_MODE:-optional}" == "required" ]]; then
+    if [[ "${EVIDENCE_MODE}" == "required" ]]; then
       die "evidence_mode=required but no evidence bundles were discovered."
     fi
     return 0

@@ -302,7 +302,7 @@ for usage, guardrails, and the feedback path.
 | --- | --- | --- |
 | `bundles` | auto-discover | Glob pattern for evidence bundles |
 | `fail_on` | `error` | Fail threshold: `error`, `warn` (or `warning`), `info`, `none`. The CLI validates the value. |
-| `evidence_mode` | `optional` | `optional` or `required`. `required` fails when discovery finds no bundles. An unrecognized value fails closed. |
+| `evidence_mode` | `optional` | `optional` or `required`. `required` fails when discovery finds no bundles. Empty, whitespace-only, and unrecognized values fail closed. The default is declared only on the Action input. |
 | `sarif` | `true` | Upload SARIF to GitHub code scanning |
 | `category` | auto-generated | SARIF category |
 | `baseline_key` | repository key | Baseline cache lookup key |
@@ -317,10 +317,10 @@ for usage, guardrails, and the feedback path.
 
 | Output | Description |
 | --- | --- |
-| `verified` | `true` if all indexed bundles passed integrity verification |
-| `evidence_state` | `absent`, `discovered`, `verified`, or `rejected`. Empty until discovery runs. |
-| `evidence_index_path` | Workspace-relative path to the bounded evidence index |
-| `evidence_index_digest` | SHA-256 of the exact evidence-index bytes |
+| `verified` | `true` if all indexed bundles passed integrity verification. Completed discovery with zero bundles emits the literal `false`, not an empty string. |
+| `evidence_state` | `absent`, `discovered`, `verified`, or `rejected`. Empty when discovery produced no determination — it never ran, or it failed before indexing completed. |
+| `evidence_index_path` | Workspace-relative path to the bounded evidence index. Populated whenever discovery completes, including optional zero evidence. |
+| `evidence_index_digest` | SHA-256 of the exact evidence-index bytes. Populated with the path whenever discovery completes. |
 | `findings_error` | Count of error-level findings |
 | `findings_warn` | Count of warning-level findings |
 | `findings_info` | Count of info-level findings |
@@ -345,10 +345,18 @@ integrity step without collapsing later lint or pack gates into it.
 | Bundles found, integrity not yet established | `false` | `discovered` |
 | Integrity passed; a later lint or pack gate may still fail the job | `true` | `verified` |
 | Integrity rejected | `false` | `rejected` |
+| Discovery did not complete | empty | empty |
 
 `evidence_state=verified` means integrity verification completed. It is not a
-policy, lint, or compliance result. When discovery did not run, these outputs
-stay empty; the action does not invent `absent`.
+policy, lint, or compliance result. When discovery did not run or failed before
+indexing completed, these outputs stay empty; the action does not invent
+`absent`.
+
+A successful optional run with zero evidence writes a deterministic empty
+index (`bundles=[]`, `complete=true`), `evidence_state=absent`, and
+`verified=false`. A missing index means discovery did not complete. `complete`
+is true when every indexed row is `verified` or `rejected`, or when the
+completed index has no rows.
 
 The index lists every discovered bundle and any sandbox-command bundle that
 participated, each with a workspace-relative path and the SHA-256 of the exact

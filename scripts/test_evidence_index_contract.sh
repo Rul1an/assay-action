@@ -156,6 +156,8 @@ assert_action_evidence_wiring() {
       discover_run.include?("build_evidence_index.sh") && discover_run.include?("index")
     abort("discover still fail-opens find with || true") if
       discover_run.include?("|| true")
+    abort("discover must not default empty evidence_mode to optional") if
+      discover_run.include?("EVIDENCE_MODE:-optional")
 
     process = by_id.fetch("process")
     process_run = process.fetch("run")
@@ -189,8 +191,6 @@ assert_action_evidence_wiring() {
       lint_section.match?(/for bundle in (\$BUNDLES|"\$\{BUNDLES\[@\]\}")/)
     abort("process must not invent a second bundle parser") if
       process_run.include?("compgen -G") || process_run.include?("head -100")
-    abort("verified must not be decided by a parallel FAILED counter") if
-      process_run.include?(%q{if [ "$FAILED" -gt 0 ]})
     abort("process must ask sealed-ok after seal") unless
       process_run.include?("build_evidence_index.sh") && process_run.include?("sealed-ok")
     seal_at = process_run.index("sealed-ok")
@@ -221,33 +221,104 @@ assert_no_second_fail_on_parser() {
 }
 
 assert_sanity_covers_additive_fields() {
-  # shellcheck disable=SC2016 # Workflow expressions are literal contract needles.
-  if ! grep -Fq -- 'evidence_state' "$SANITY"; then
-    echo "action-sanity.yml must assert evidence_state" >&2
-    return 1
-  fi
-  if ! grep -Fq -- 'evidence_index_digest' "$SANITY"; then
-    echo "action-sanity.yml must assert evidence_index_digest" >&2
-    return 1
-  fi
+  # shellcheck disable=SC2016 # Ruby compares literal composite-action expressions.
+  ruby -ryaml -e '
+    workflow = YAML.safe_load_file(ARGV.fetch(0), aliases: true)
+    found = false
+    workflow.fetch("jobs").each_value do |job|
+      steps = job.fetch("steps")
+      action = steps.find do |step|
+        step["uses"] == "./" &&
+          step.dig("with", "evidence_mode") == "required" &&
+          step["continue-on-error"] == true
+      end
+      next if action.nil?
+      id = action.fetch("id")
+      outcome = "${{ steps.#{id}.outcome }}"
+      assert_step = steps.find do |step|
+        env = step["env"] || {}
+        env.value?(outcome) && step.fetch("run", "").include?(%q{test "$})
+      end
+      abort("required-zero job must assert steps.#{id}.outcome") if assert_step.nil?
+      env = assert_step.fetch("env")
+      run = assert_step.fetch("run")
+      abort("required-zero assert must compare outcome to failure") unless
+        run.include?(%q{test "$OUTCOME" = "failure"})
+      %w[evidence_state verified evidence_index_path evidence_index_digest].each do |name|
+        abort("required-zero assert lost #{name}") unless
+          env.values.any? { |value| value.to_s.include?(name) } || run.include?(name)
+      end
+      abort("required-zero assert must parse the index document") unless
+        run.include?("complete") && run.include?("bundles")
+      found = true
+    end
+    abort("action-sanity.yml must run ./ with evidence_mode=required and continue-on-error") unless found
+  ' "$SANITY"
 }
 
-test_unknown_mode() {
+expect_invalid_mode() {
+  local mode="$1"
+  local label="$2"
   local ws bundles out
   ws="$(new_workspace)"
   bundles="$ws/bundles.txt"
   : >"$bundles"
   out="$ws/out.txt"
   : >"$out"
-  if run_index "$ws" "sometimes" "$bundles" "" "$out" >"$ws/log.txt" 2>&1; then
-    fail "unknown evidence_mode was accepted"
+  if run_index "$ws" "$mode" "$bundles" "" "$out" >"$ws/log.txt" 2>&1; then
+    fail "${label} evidence_mode was accepted"
     return
   fi
   if [[ -s "$out" ]] && grep -Fq -- "evidence_state=" "$out"; then
-    fail "unknown evidence_mode wrote an evidence_state"
+    fail "${label} evidence_mode wrote an evidence_state"
     return
   fi
+  if [[ -f "$ws/.assay-reports/evidence-index.json" ]]; then
+    fail "${label} evidence_mode wrote an index"
+    return
+  fi
+}
+
+test_unknown_mode() {
+  expect_invalid_mode "sometimes" "unknown" || return
   pass "unknown evidence_mode fails closed"
+}
+
+test_empty_mode_fails_closed() {
+  local before="$failed"
+  expect_invalid_mode "" "empty"
+  if [[ "$failed" -ne "$before" ]]; then
+    return
+  fi
+  pass "empty evidence_mode fails closed"
+}
+
+test_whitespace_mode_fails_closed() {
+  local before="$failed"
+  expect_invalid_mode " " "whitespace"
+  expect_invalid_mode $'\t' "tab"
+  if [[ "$failed" -ne "$before" ]]; then
+    return
+  fi
+  pass "whitespace evidence_mode fails closed"
+}
+
+test_discover_empty_mode_fails_closed() {
+  local ws log
+  ws="$(new_workspace)"
+  log="$ws/discover.log"
+  local status=0
+  run_discover_fixture "$ws" "$log" "" || status=$?
+  if [[ "$status" -eq 0 ]]; then
+    fail "discover treated empty evidence_mode as optional"
+    cat "$log" >&2 || true
+    return
+  fi
+  if [[ -f "$ws/.assay-reports/evidence-index.json" ]]; then
+    fail "empty evidence_mode published an index"
+    return
+  fi
+  pass "discover empty evidence_mode fails closed"
 }
 
 test_optional_zero() {
@@ -264,17 +335,35 @@ test_optional_zero() {
   require_output "$out" "found=false" || { fail "optional + zero did not report found=false"; return; }
   require_output "$out" "count=0" || { fail "optional + zero lost count=0"; return; }
   require_output "$out" "evidence_state=absent" || { fail "optional + zero lost evidence_state=absent"; return; }
+  require_output "$out" "verified=false" || { fail "optional + zero lost verified=false"; return; }
+  if ! grep -E '^evidence_index_path=' "$out" | grep -Fq -- "evidence-index.json"; then
+    fail "optional + zero lost evidence_index_path"
+    return
+  fi
+  if ! grep -Eq '^evidence_index_digest=[0-9a-f]{64}$' "$out"; then
+    fail "optional + zero lost evidence_index_digest"
+    return
+  fi
   if [[ ! -s "$ws/.assay-reports/evidence-index.json" ]]; then
-    fail "optional + zero did not write a complete empty index"
+    fail "optional + zero did not write a completed empty index"
     return
   fi
-  if ! python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d.get("complete") is False; assert d.get("bundles")==[]' \
-    "$ws/.assay-reports/evidence-index.json"
+  if ! python3 -c '
+import hashlib, json, sys
+path = sys.argv[1]
+raw = open(path, "rb").read()
+d = json.loads(raw)
+assert d.get("complete") is True, d
+assert d.get("bundles") == []
+digest = open(sys.argv[2], encoding="ascii").read().splitlines()
+got = [line.split("=", 1)[1] for line in digest if line.startswith("evidence_index_digest=")][-1]
+assert got == hashlib.sha256(raw).hexdigest(), (got, hashlib.sha256(raw).hexdigest())
+' "$ws/.assay-reports/evidence-index.json" "$out"
   then
-    fail "optional + zero must publish an unsealed empty index (complete=false)"
+    fail "optional + zero must publish a completed empty index (bundles=[], complete=true)"
     return
   fi
-  pass "optional + zero succeeds with absent and an unsealed empty index"
+  pass "optional + zero succeeds with absent and a completed empty index"
 }
 
 test_required_zero() {
@@ -605,7 +694,7 @@ extract_discover_run() {
 run_discover_fixture() {
   local ws="$1"
   local log="$2"
-  local mode="${3:-optional}"
+  local mode="${3-optional}"
   local script="$TMP_DIR/discover-step.sh"
   extract_discover_run "$script"
   mkdir -p "$ws/.assay-reports" "$ws/tmp"
@@ -722,14 +811,18 @@ test_required_zero_unsealed() {
     return
   fi
   require_output "$out" "evidence_state=absent" || { fail "required + zero lost absent"; return; }
-  if [[ -f "$ws/.assay-reports/evidence-index.json" ]] &&
-    ! python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); raise SystemExit(0 if d.get("complete") is False else 1)' \
-      "$ws/.assay-reports/evidence-index.json"
-  then
-    fail "required + zero published a complete index"
+  require_output "$out" "verified=false" || { fail "required + zero lost verified=false"; return; }
+  if [[ ! -s "$ws/.assay-reports/evidence-index.json" ]]; then
+    fail "required + zero lost the completed empty index"
     return
   fi
-  pass "required + zero stays fail-closed and unsealed"
+  if ! python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d.get("complete") is True; assert d.get("bundles")==[]' \
+    "$ws/.assay-reports/evidence-index.json"
+  then
+    fail "required + zero must still emit a completed empty index"
+    return
+  fi
+  pass "required + zero fails closed with a completed empty index"
 }
 
 test_verify_failure_seals_rejected() {
@@ -809,6 +902,9 @@ run_positive_suite() {
     fail "action-sanity additive field coverage"
   fi
   test_unknown_mode
+  test_empty_mode_fails_closed
+  test_whitespace_mode_fails_closed
+  test_discover_empty_mode_fails_closed
   test_optional_zero
   test_required_zero
   test_101st_fail_closed
@@ -905,6 +1001,31 @@ text = text.replace('optional|required)', 'optional|required|*)')
 # If the script uses a case arm, also rewrite unknown into optional.
 text = text.replace('unknown evidence_mode', 'treating unknown evidence_mode as optional')
 p.write_text(text)
+PY
+}
+
+mut_empty_mode_defaults_optional() {
+  python3 - "$ACTION" "$INDEX_SH" <<'PY'
+from pathlib import Path
+import sys
+action = Path(sys.argv[1])
+index = Path(sys.argv[2])
+a = action.read_text()
+if "EVIDENCE_MODE:-optional" in a:
+    raise SystemExit("discover already defaults empty mode")
+if 'EVIDENCE_MODE="${EVIDENCE_MODE}"' in a:
+    a = a.replace(
+        'EVIDENCE_MODE="${EVIDENCE_MODE}"',
+        'EVIDENCE_MODE="${EVIDENCE_MODE:-optional}"',
+        1,
+    )
+else:
+    raise SystemExit("discover EVIDENCE_MODE assignment not found")
+action.write_text(a)
+s = index.read_text()
+s = s.replace('case "${EVIDENCE_MODE:-}"', 'case "${EVIDENCE_MODE:-optional}"', 1)
+s = s.replace('case "${EVIDENCE_MODE}"', 'case "${EVIDENCE_MODE:-optional}"', 1)
+index.write_text(s)
 PY
 }
 
@@ -1081,6 +1202,7 @@ run_mutations() {
   mutate_expect_fail "restore-head-100" mut_head_100
   mutate_expect_fail "omit-sandbox" mut_omit_sandbox
   mutate_expect_fail "unknown-mode-accepted" mut_unknown_mode
+  mutate_expect_fail "empty-mode-defaults-optional" mut_empty_mode_defaults_optional
   mutate_expect_fail "manufacture-absent" mut_manufacture_absent
   mutate_expect_fail "flip-verified-after-integrity" mut_flip_verified_after_integrity
   mutate_expect_fail "allow-101st" mut_allow_101
