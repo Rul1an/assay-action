@@ -154,6 +154,8 @@ assert_action_evidence_wiring() {
       discover_run.match?(/head\s+-n?\s*100\b/)
     abort("discover must call build_evidence_index.sh index") unless
       discover_run.include?("build_evidence_index.sh") && discover_run.include?("index")
+    abort("discover still fail-opens find with || true") if
+      discover_run.include?("|| true")
 
     process = by_id.fetch("process")
     process_run = process.fetch("run")
@@ -187,6 +189,14 @@ assert_action_evidence_wiring() {
       lint_section.match?(/for bundle in (\$BUNDLES|"\$\{BUNDLES\[@\]\}")/)
     abort("process must not invent a second bundle parser") if
       process_run.include?("compgen -G") || process_run.include?("head -100")
+    abort("verified must not be decided by a parallel FAILED counter") if
+      process_run.include?(%q{if [ "$FAILED" -gt 0 ]})
+    abort("process must ask sealed-ok after seal") unless
+      process_run.include?("build_evidence_index.sh") && process_run.include?("sealed-ok")
+    seal_at = process_run.index("sealed-ok")
+    true_after_seal = process_run.index("verified=true")
+    abort("sealed-ok must run before verified=true") if
+      seal_at.nil? || true_after_seal.nil? || seal_at > true_after_seal
 
     finalize = by_id.fetch("finalize-evidence")
     abort("finalize-evidence must run if: always()") unless finalize["if"] == "always()"
@@ -258,13 +268,13 @@ test_optional_zero() {
     fail "optional + zero did not write a complete empty index"
     return
   fi
-  if ! python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d.get("complete") is True; assert d.get("bundles")==[]' \
+  if ! python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d.get("complete") is False; assert d.get("bundles")==[]' \
     "$ws/.assay-reports/evidence-index.json"
   then
-    fail "optional + zero index is not a complete empty document"
+    fail "optional + zero must publish an unsealed empty index (complete=false)"
     return
   fi
-  pass "optional + zero succeeds with absent and a complete empty index"
+  pass "optional + zero succeeds with absent and an unsealed empty index"
 }
 
 test_required_zero() {
@@ -334,7 +344,8 @@ d=json.load(open(sys.argv[1]))
 sources=sorted(b["source"] for b in d["bundles"])
 paths=sorted(b["path"] for b in d["bundles"])
 assert sources==["discovered","sandbox_command"], sources
-assert d.get("complete") is True
+assert d.get("complete") is False
+assert all(b["integrity"]=="pending" for b in d["bundles"])
 assert all("/" not in p[:1] and ".." not in p.split("/") for p in paths), paths
 ' "$ws/.assay-reports/evidence-index.json"
   then
@@ -523,7 +534,7 @@ if [ "${1:-}" = "--version" ]; then
   exit 0
 fi
 if [ "${1:-}" = "evidence" ] && [ "${2:-}" = "verify" ]; then
-  exit 0
+  exit "${ASSAY_VERIFY_EXIT:-0}"
 fi
 if [ "${1:-}" = "evidence" ] && [ "${2:-}" = "lint" ] && [ "${3:-}" = "--format" ] && [ "${4:-}" = "json" ]; then
   printf '%s\n' '{"findings":[]}'
@@ -565,6 +576,7 @@ run_process_fixture() {
   (
     cd "$ws"
     PATH="$ws/bin:$PATH" \
+      ASSAY_VERIFY_EXIT="${ASSAY_VERIFY_EXIT:-0}" \
       GITHUB_WORKSPACE="$ws" \
       GITHUB_ACTION_PATH="$REPO_ROOT" \
       GITHUB_OUTPUT="$out" \
@@ -572,6 +584,42 @@ run_process_fixture() {
       INDEX_PATH=".assay-reports/evidence-index.json" \
       RUNNER_TEMP="$ws/tmp" \
       FAIL_ON="error" \
+      bash "$script"
+  ) >"$log" 2>&1
+}
+
+last_verified() {
+  grep -E '^verified=' "$1" | tail -n1 || true
+}
+
+extract_discover_run() {
+  local dest="$1"
+  ruby -ryaml -e '
+    action = YAML.safe_load_file(ARGV.fetch(0), aliases: true)
+    step = action.fetch("runs").fetch("steps").find { |s| s["id"] == "discover" }
+    abort("missing discover step") if step.nil?
+    File.write(ARGV.fetch(1), step.fetch("run"))
+  ' "$ACTION" "$dest"
+}
+
+run_discover_fixture() {
+  local ws="$1"
+  local log="$2"
+  local mode="${3:-optional}"
+  local script="$TMP_DIR/discover-step.sh"
+  extract_discover_run "$script"
+  mkdir -p "$ws/.assay-reports" "$ws/tmp"
+  local out="$ws/github-output.txt"
+  : >"$out"
+  (
+    cd "$ws"
+    GITHUB_WORKSPACE="$ws" \
+      GITHUB_ACTION_PATH="$REPO_ROOT" \
+      GITHUB_OUTPUT="$out" \
+      BUNDLES_PATTERN="" \
+      EVIDENCE_MODE="$mode" \
+      SANDBOX_BUNDLE="" \
+      RUNNER_TEMP="$ws/tmp" \
       bash "$script"
   ) >"$log" 2>&1
 }
@@ -637,6 +685,118 @@ test_empty_discovery_skips_process() {
   pass "empty discovery skips process instead of an empty array"
 }
 
+test_unsealed_pending_not_complete() {
+  local ws bundles out
+  ws="$(new_workspace)"
+  write_bundle "$ws/.assay/evidence/a.tar.gz" "pending-bytes"
+  bundles="$ws/bundles.txt"
+  printf '%s\n' ".assay/evidence/a.tar.gz" >"$bundles"
+  out="$ws/out.txt"
+  : >"$out"
+  if ! run_index "$ws" "optional" "$bundles" "" "$out"; then
+    fail "index of one pending bundle failed"
+    return
+  fi
+  if ! python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert d.get("complete") is False, d
+assert d["bundles"][0]["integrity"]=="pending"
+' "$ws/.assay-reports/evidence-index.json"
+  then
+    fail "all-pending index was published as complete"
+    return
+  fi
+  pass "all-pending index is not complete"
+}
+
+test_required_zero_unsealed() {
+  local ws bundles out
+  ws="$(new_workspace)"
+  bundles="$ws/bundles.txt"
+  : >"$bundles"
+  out="$ws/out.txt"
+  : >"$out"
+  if run_index "$ws" "required" "$bundles" "" "$out" >"$ws/log.txt" 2>&1; then
+    fail "required + zero succeeded"
+    return
+  fi
+  require_output "$out" "evidence_state=absent" || { fail "required + zero lost absent"; return; }
+  if [[ -f "$ws/.assay-reports/evidence-index.json" ]] &&
+    ! python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); raise SystemExit(0 if d.get("complete") is False else 1)' \
+      "$ws/.assay-reports/evidence-index.json"
+  then
+    fail "required + zero published a complete index"
+    return
+  fi
+  pass "required + zero stays fail-closed and unsealed"
+}
+
+test_verify_failure_seals_rejected() {
+  local ws bundles log last
+  ws="$(new_workspace)"
+  write_bundle "$ws/.assay/evidence/bad.tar.gz" "reject-me"
+  bundles="$ws/raw.txt"
+  printf '%s\n' ".assay/evidence/bad.tar.gz" >"$bundles"
+  log="$ws/process.log"
+  local status=0
+  ASSAY_VERIFY_EXIT=1 run_process_fixture "$ws" "$bundles" "$log" || status=$?
+  if [[ "$status" -eq 0 ]]; then
+    fail "failing assay evidence verify was treated as success"
+    return
+  fi
+  last="$(last_verified "$ws/github-output.txt")"
+  if [[ "$last" == "verified=true" ]]; then
+    fail "published verified=true beside a rejected integrity row"
+    return
+  fi
+  if [[ "$last" != "verified=false" ]]; then
+    fail "verify failure did not emit verified=false (got ${last:-empty})"
+    return
+  fi
+  if ! python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert d["bundles"][0]["integrity"]=="rejected"
+assert d.get("complete") is True
+' "$ws/.assay-reports/evidence-index.json"
+  then
+    fail "verify failure did not seal a rejected row"
+    return
+  fi
+  if grep -Fq -- "verified=true" "$ws/github-output.txt"; then
+    fail "verified=true was published in the same outputs as a rejected row"
+    return
+  fi
+  pass "verify failure seals rejected and never publishes verified=true"
+}
+
+test_discovery_find_failure() {
+  local ws log
+  ws="$(new_workspace)"
+  write_bundle "$ws/.assay/evidence/ok.tar.gz" "visible"
+  mkdir -p "$ws/.assay/evidence/locked"
+  write_bundle "$ws/.assay/evidence/locked/hidden.tar.gz" "hidden"
+  chmod 000 "$ws/.assay/evidence/locked"
+  log="$ws/discover.log"
+  local status=0
+  run_discover_fixture "$ws" "$log" "required" || status=$?
+  chmod 755 "$ws/.assay/evidence/locked" 2>/dev/null || true
+  if [[ "$status" -eq 0 ]]; then
+    fail "discovery traversal error was fail-opened"
+    cat "$log" >&2 || true
+    return
+  fi
+  if [[ -f "$ws/.assay-reports/evidence-index.json" ]] &&
+    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); raise SystemExit(0 if d.get("complete") is True else 1)' \
+      "$ws/.assay-reports/evidence-index.json" 2>/dev/null
+  then
+    fail "failed discovery published a complete prefix index"
+    return
+  fi
+  pass "discovery traversal error fails closed"
+}
+
 run_positive_suite() {
   require_file "$INDEX_SH"
   require_file "$ACTION"
@@ -661,6 +821,10 @@ run_positive_suite() {
   test_process_lints_one_bundle
   test_process_lints_path_with_space
   test_empty_discovery_skips_process
+  test_unsealed_pending_not_complete
+  test_required_zero_unsealed
+  test_verify_failure_seals_rejected
+  test_discovery_find_failure
   if [[ "$failed" -ne 0 ]]; then
     echo "$failed evidence-index check(s) failed" >&2
     return 1
@@ -686,10 +850,12 @@ mutate_expect_fail() {
   restore_canonical
   "$@"
   failed=0
-  set +e
-  run_positive_suite >"$TMP_DIR/mutation-$name.log" 2>&1
-  status=$?
-  set -e
+  status=0
+  if run_positive_suite >"$TMP_DIR/mutation-$name.log" 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
   if [[ "$status" -eq 0 ]]; then
     restore_canonical
     echo "MUTATION DID NOT BITE: $name" >&2
@@ -793,6 +959,69 @@ p.write_text(text)
 PY
 }
 
+mut_drop_sealed_ok_guard() {
+  python3 - "$ACTION" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+old = """        if ! WORKSPACE="${GITHUB_WORKSPACE}" \\
+          INDEX_PATH="$INDEX_PATH" \\
+          bash "$GITHUB_ACTION_PATH/scripts/build_evidence_index.sh" sealed-ok; then
+          echo "verified=false" >> $GITHUB_OUTPUT
+          exit 2  # Distinct exit code for verification failure
+        fi
+"""
+# Also bite the pre-fix FAILED counter if it is still present.
+old_failed = '''        if [ "$FAILED" -gt 0 ]; then
+          echo "verified=false" >> $GITHUB_OUTPUT
+          exit 2  # Distinct exit code for verification failure
+        fi
+'''
+if old in text:
+    p.write_text(text.replace(old, "", 1))
+elif old_failed in text:
+    p.write_text(text.replace(old_failed, "", 1))
+else:
+    raise SystemExit("sealed-ok / FAILED guard not found")
+PY
+}
+
+mut_restore_find_or_true() {
+  python3 - "$ACTION" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+old = "find . \\( -path './.assay/evidence/*.tar.gz' -o -path './evidence/*.tar.gz' \\) -type f 2>/dev/null >> \"$RAW\""
+if old not in text:
+    raise SystemExit("discover find line not found")
+if "|| true" in text[text.find(old):text.find(old)+len(old)+20]:
+    raise SystemExit("find already fail-opens")
+p.write_text(text.replace(old, old + " || true", 1))
+PY
+}
+
+mut_hardcode_complete_true() {
+  python3 - "$INDEX_SH" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+if "complete_from_rows" not in text:
+    raise SystemExit("complete_from_rows not found")
+text = text.replace(
+    "complete = complete_from_rows(rows)",
+    "complete = True",
+)
+text = text.replace(
+    "doc['complete'] = complete_from_rows(doc['bundles'])",
+    "doc['complete'] = True",
+)
+p.write_text(text)
+PY
+}
+
 mut_lint_pass_uses_bundles_var() {
   python3 - "$ACTION" <<'PY'
 from pathlib import Path
@@ -857,6 +1086,9 @@ run_mutations() {
   mutate_expect_fail "allow-101st" mut_allow_101
   mutate_expect_fail "accept-between-index-mutation" mut_skip_assert
   mutate_expect_fail "lint-pass-uses-BUNDLES" mut_lint_pass_uses_bundles_var
+  mutate_expect_fail "drop-sealed-ok-guard" mut_drop_sealed_ok_guard
+  mutate_expect_fail "restore-find-or-true" mut_restore_find_or_true
+  mutate_expect_fail "hardcode-complete-true" mut_hardcode_complete_true
 }
 
 main() {

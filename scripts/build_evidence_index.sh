@@ -77,29 +77,42 @@ print(os.path.relpath(full, workspace).replace("\\", "/"))
 ' "$WORKSPACE" "$(index_abs)"
 }
 
+complete_from_rows_py() {
+  cat <<'PY'
+def complete_from_rows(rows):
+    return bool(rows) and all(
+        r.get("integrity") in ("verified", "rejected") for r in rows
+    )
+
+def all_rows_verified(rows):
+    return bool(rows) and all(r.get("integrity") == "verified" for r in rows)
+PY
+}
+
 write_index_json() {
   local dest="$1"
-  python3 -c '
+  python3 -c "
+$(complete_from_rows_py)
 import json, sys
 schema = sys.argv[1]
-complete = sys.argv[2] == "true"
 rows = []
 for line in sys.stdin:
-    line = line.rstrip("\n")
+    line = line.rstrip('\n')
     if not line:
         continue
-    path, sha, source, integrity = line.split("\t")
+    path, sha, source, integrity = line.split('\t')
     rows.append({
-        "integrity": integrity,
-        "path": path,
-        "sha256": sha,
-        "source": source,
+        'integrity': integrity,
+        'path': path,
+        'sha256': sha,
+        'source': source,
     })
-rows.sort(key=lambda row: row["path"])
-doc = {"bundles": rows, "complete": complete, "schema": schema}
-with open(sys.argv[3], "w", encoding="ascii") as handle:
-    handle.write(json.dumps(doc, sort_keys=True, separators=(",", ":")) + "\n")
-' "$SCHEMA" "true" "$dest"
+rows.sort(key=lambda row: row['path'])
+complete = complete_from_rows(rows)
+doc = {'bundles': rows, 'complete': complete, 'schema': schema}
+with open(sys.argv[2], 'w', encoding='ascii') as handle:
+    handle.write(json.dumps(doc, sort_keys=True, separators=(',', ':')) + '\n')
+" "$SCHEMA" "$dest"
 }
 
 validate_mode() {
@@ -231,30 +244,53 @@ cmd_seal() {
   dest="$(index_abs)"
   [[ -f "$dest" ]] || die "Evidence index does not exist: $dest"
   [[ -n "$results" && -f "$results" ]] || die "Integrity results file is missing."
-  python3 -c '
+  local verdict
+  verdict="$(
+    python3 -c "
+$(complete_from_rows_py)
 import json, sys
 index_path = sys.argv[1]
 results_path = sys.argv[2]
-with open(index_path, encoding="ascii") as handle:
+with open(index_path, encoding='ascii') as handle:
     doc = json.load(handle)
 status = {}
-with open(results_path, encoding="ascii") as handle:
+with open(results_path, encoding='ascii') as handle:
     for line in handle:
-        line = line.rstrip("\n")
+        line = line.rstrip('\n')
         if not line:
             continue
-        path, integrity = line.split("\t")
+        path, integrity = line.split('\t')
         status[path] = integrity
-for row in doc["bundles"]:
-    if row["path"] not in status:
-        raise SystemExit("missing integrity result for " + row["path"])
-    row["integrity"] = status[row["path"]]
-doc["complete"] = True
-with open(index_path, "w", encoding="ascii") as handle:
-    handle.write(json.dumps(doc, sort_keys=True, separators=(",", ":")) + "\n")
-' "$dest" "$results"
+for row in doc['bundles']:
+    if row['path'] not in status:
+        raise SystemExit('missing integrity result for ' + row['path'])
+    row['integrity'] = status[row['path']]
+doc['complete'] = complete_from_rows(doc['bundles'])
+with open(index_path, 'w', encoding='ascii') as handle:
+    handle.write(json.dumps(doc, sort_keys=True, separators=(',', ':')) + '\n')
+print('verified' if all_rows_verified(doc['bundles']) else 'rejected')
+" "$dest" "$results"
+  )"
   emit "evidence_index_path=$(index_rel)"
   emit "evidence_index_digest=$(file_sha256 "$dest")"
+  if [[ "$verdict" == "verified" ]]; then
+    emit "verified=true"
+  else
+    emit "verified=false"
+  fi
+}
+
+cmd_sealed_ok() {
+  local dest
+  dest="$(index_abs)"
+  [[ -f "$dest" ]] || die "Evidence index does not exist: $dest"
+  python3 -c "
+$(complete_from_rows_py)
+import json, sys
+with open(sys.argv[1], encoding='ascii') as handle:
+    doc = json.load(handle)
+raise SystemExit(0 if all_rows_verified(doc.get('bundles', [])) else 1)
+" "$dest"
 }
 
 cmd_finalize() {
@@ -304,8 +340,9 @@ case "${1:-}" in
   index) cmd_index ;;
   assert) cmd_assert ;;
   seal) cmd_seal ;;
+  sealed-ok) cmd_sealed_ok ;;
   finalize) cmd_finalize ;;
   *)
-    die_config "usage: build_evidence_index.sh index|assert|seal|finalize"
+    die_config "usage: build_evidence_index.sh index|assert|seal|sealed-ok|finalize"
     ;;
 esac

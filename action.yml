@@ -434,7 +434,7 @@ runs:
         # Auto-discover if no pattern provided. Do not truncate; the index
         # script owns the 100-bundle cap and fails closed on the 101st.
         if [ -z "$BUNDLES_PATTERN" ]; then
-          find . \( -path './.assay/evidence/*.tar.gz' -o -path './evidence/*.tar.gz' \) -type f 2>/dev/null >> "$RAW" || true
+          find . \( -path './.assay/evidence/*.tar.gz' -o -path './evidence/*.tar.gz' \) -type f 2>/dev/null >> "$RAW"
         else
           # Glob expansion: use compgen for safe pattern matching
           # shellcheck disable=SC2086
@@ -508,7 +508,9 @@ runs:
         echo "verified_count=$VERIFIED" >> $GITHUB_OUTPUT
         echo "failed_count=$FAILED" >> $GITHUB_OUTPUT
 
-        if [ "$FAILED" -gt 0 ]; then
+        if ! WORKSPACE="${GITHUB_WORKSPACE}" \
+          INDEX_PATH="$INDEX_PATH" \
+          bash "$GITHUB_ACTION_PATH/scripts/build_evidence_index.sh" sealed-ok; then
           echo "verified=false" >> $GITHUB_OUTPUT
           exit 2  # Distinct exit code for verification failure
         fi
