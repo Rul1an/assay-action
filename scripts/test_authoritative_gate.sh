@@ -2,7 +2,6 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HELPER="$REPO_ROOT/scripts/apply_fail_on.sh"
 ACTION="$REPO_ROOT/action.yml"
 failed=0
 
@@ -15,39 +14,10 @@ pass() {
   echo "PASS: $*"
 }
 
-expect_status() {
-  local label="$1"
-  local want="$2"
-  shift 2
-  local got=0
-  "$@" >/tmp/assay-gate-out 2>/tmp/assay-gate-err || got=$?
-  if [[ "$got" -ne "$want" ]]; then
-    fail "$label (exit $got, want $want)"
-    sed -n '1,8p' /tmp/assay-gate-err >&2 || true
-    return
-  fi
-  pass "$label"
-}
-
-if [[ ! -x "$HELPER" ]]; then
-  fail "scripts/apply_fail_on.sh must exist and be executable"
+if [[ -e "$REPO_ROOT/scripts/apply_fail_on.sh" ]]; then
+  fail "scripts/apply_fail_on.sh must not exist; the CLI owns fail_on"
 else
-  expect_status "unknown fail_on fail-closed" 1 "$HELPER" "eror" 0 0 0
-  expect_status "empty fail_on fail-closed" 1 "$HELPER" "" 0 0 0
-  expect_status "warning alias is clean with no findings" 0 "$HELPER" "warning" 0 0 0
-  expect_status "warning alias fails on warnings" 1 "$HELPER" "warning" 0 1 0
-  expect_status "warn fails on warnings" 1 "$HELPER" "warn" 0 1 0
-  expect_status "error ignores warnings" 0 "$HELPER" "error" 0 3 0
-  expect_status "error fails on errors" 1 "$HELPER" "error" 1 0 0
-  expect_status "info fails on info" 1 "$HELPER" "info" 0 0 1
-  expect_status "none never fails on findings" 0 "$HELPER" "none" 9 9 9
-  if "$HELPER" "eror" 0 0 0 >/tmp/assay-gate-out 2>/tmp/assay-gate-err; then
-    fail "unknown fail_on must not exit 0"
-  elif ! grep -q "unknown fail_on" /tmp/assay-gate-err /tmp/assay-gate-out; then
-    fail "unknown fail_on must name the bad value"
-  else
-    pass "unknown fail_on names the bad value"
-  fi
+  pass "no second fail_on vocabulary"
 fi
 
 if python3 - "$ACTION" <<'PY'
@@ -73,34 +43,54 @@ if env != {"ASSAY_VERSION_INPUT": "${{ inputs.version }}"}:
     raise SystemExit("version-resolution lost ASSAY_VERSION_INPUT")
 
 process = by_id["process"]
-if '"$GITHUB_ACTION_PATH/scripts/apply_fail_on.sh"' not in process["run"]:
-    raise SystemExit("bundle gate must call scripts/apply_fail_on.sh")
-if 'case "$FAIL_ON"' in process["run"]:
+run = process["run"]
+if 'case "$FAIL_ON"' in run:
     raise SystemExit("bundle gate still has a local fail_on case")
+if '--fail-on "$FAIL_ON"' not in run:
+    raise SystemExit("bundle lint must forward --fail-on \"$FAIL_ON\" to the CLI")
+if "GATE_HITS" not in run:
+    raise SystemExit("bundle lint must collect CLI gate hits")
+if "exit 2" not in run or "Could not apply fail_on=" not in run:
+    raise SystemExit("unrecognized fail_on must fail closed (Action exit 2)")
+if "apply_fail_on.sh" in run:
+    raise SystemExit("bundle gate must not call apply_fail_on.sh")
+
+desc = action["inputs"]["fail_on"]["description"]
+if "warning" not in desc:
+    raise SystemExit("fail_on description must name the warning alias")
+if action["inputs"]["fail_on"]["default"] != "error":
+    raise SystemExit("fail_on default changed")
 
 pack = by_id["pack-lint"]
 if pack["env"].get("FAIL_ON") != "${{ inputs.fail_on }}":
     raise SystemExit("pack-lint must receive FAIL_ON")
-if '"$GITHUB_ACTION_PATH/scripts/apply_fail_on.sh"' not in pack["run"]:
-    raise SystemExit("pack-lint must call scripts/apply_fail_on.sh")
-if "--fail-on none" not in pack["run"]:
+pack_run = pack["run"]
+if "--fail-on none" not in pack_run:
     raise SystemExit("pack-lint must keep --fail-on none for load/config isolation")
+if '--fail-on "$FAIL_ON"' not in pack_run or "--pack" not in pack_run:
+    raise SystemExit("pack-lint must second-pass --fail-on \"$FAIL_ON\" --pack to the CLI")
+if "PACK_GATE_HITS" not in pack_run:
+    raise SystemExit("pack-lint must collect CLI pack gate hits")
+if "apply_fail_on.sh" in pack_run:
+    raise SystemExit("pack gate must not call apply_fail_on.sh")
+if 'select((.level // "warning")' in pack_run:
+    raise SystemExit("pack gate must not count SARIF levels")
 
 install = next((s for s in steps if s.get("name") == "Install Assay CLI"), None)
 if install is None:
     raise SystemExit("missing Install Assay CLI step")
-run = install["run"]
+install_run = install["run"]
 for needle in ("--retry 3", "--retry-delay 2", "--retry-all-errors", "User-Agent: assay-action-installer"):
-    if needle not in run:
+    if needle not in install_run:
         raise SystemExit(f"archive download lost {needle}")
-curl_uses = run.count('curl "${CURL_ARGS[@]}"')
+curl_uses = install_run.count('curl "${CURL_ARGS[@]}"')
 if curl_uses != 2:
     raise SystemExit(f"expected both archive downloads to use CURL_ARGS, found {curl_uses}")
 PY
 then
-  pass "action.yml token, helper, pack, and curl wiring"
+  pass "action.yml CLI gate, token, pack, and curl wiring"
 else
-  fail "action.yml token, helper, pack, or curl wiring"
+  fail "action.yml CLI gate, token, pack, or curl wiring"
 fi
 
 TMP_DIR="$(mktemp -d)"
