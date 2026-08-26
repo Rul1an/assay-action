@@ -616,6 +616,12 @@ assert d["bundles"][0]["sha256"]==sys.argv[2]
     fail "sealed index lost the exact-byte digest"
     return
   fi
+  issued="$(grep -E '^evidence_index_digest=' "$out" | tail -n1 | cut -d= -f2-)"
+  actual="$(file_sha256 "$ws/.assay-reports/evidence-index.json")"
+  if [[ -z "$issued" || "$issued" != "$actual" ]]; then
+    fail "sealed evidence_index_digest does not match SHA-256 of the final index bytes"
+    return
+  fi
   pass "seal keeps exact-byte SHA-256 after integrity"
 }
 
@@ -1212,6 +1218,23 @@ p.write_text(
 PY
 }
 
+mut_seal_digest_constant() {
+  python3 - "$INDEX_SH" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+old = 'emit "evidence_index_digest=$(file_sha256 "$dest")"'
+if old not in text:
+    raise SystemExit("sealed digest emission not found")
+p.write_text(text.replace(
+    old,
+    'emit "evidence_index_digest=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"',
+    1,
+))
+PY
+}
+
 mut_skip_assert() {
   python3 - "$INDEX_SH" <<'PY'
 from pathlib import Path
@@ -1252,6 +1275,7 @@ run_mutations() {
   mutate_expect_fail "drop-sealed-ok-guard" mut_drop_sealed_ok_guard
   mutate_expect_fail "restore-find-or-true" mut_restore_find_or_true
   mutate_expect_fail "hardcode-complete-true" mut_hardcode_complete_true
+  mutate_expect_fail "seal-digest-constant" mut_seal_digest_constant
 }
 
 main() {

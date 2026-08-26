@@ -226,7 +226,15 @@ jobs:
           test "$VERIFIED" = "true"
           test -n "$INDEX_DIGEST"
           test -f "$INDEX_PATH"
-          python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["complete"] is True; assert len(d["bundles"])==1' "$INDEX_PATH"
+          python3 -c '
+          import hashlib, json, sys
+          path = sys.argv[1]
+          raw = open(path, "rb").read()
+          d = json.loads(raw)
+          assert d["complete"] is True
+          assert len(d["bundles"]) == 1
+          assert hashlib.sha256(raw).hexdigest() == sys.argv[2]
+          ' "$INDEX_PATH" "$INDEX_DIGEST"
 
   baseline-delta-trusted:
     if: github.event_name != 'pull_request'
