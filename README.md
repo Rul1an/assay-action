@@ -302,6 +302,7 @@ for usage, guardrails, and the feedback path.
 | --- | --- | --- |
 | `bundles` | auto-discover | Glob pattern for evidence bundles |
 | `fail_on` | `error` | Fail threshold: `error`, `warn` (or `warning`), `info`, `none`. The CLI validates the value. |
+| `evidence_mode` | `optional` | `optional` or `required`. `required` fails when discovery finds no bundles. An unrecognized value fails closed. |
 | `sarif` | `true` | Upload SARIF to GitHub code scanning |
 | `category` | auto-generated | SARIF category |
 | `baseline_key` | repository key | Baseline cache lookup key |
@@ -316,7 +317,10 @@ for usage, guardrails, and the feedback path.
 
 | Output | Description |
 | --- | --- |
-| `verified` | `true` if all bundles passed verification |
+| `verified` | `true` if all indexed bundles passed integrity verification |
+| `evidence_state` | `absent`, `discovered`, `verified`, or `rejected`. Empty until discovery runs. |
+| `evidence_index_path` | Workspace-relative path to the bounded evidence index |
+| `evidence_index_digest` | SHA-256 of the exact evidence-index bytes |
 | `findings_error` | Count of error-level findings |
 | `findings_warn` | Count of warning-level findings |
 | `findings_info` | Count of info-level findings |
@@ -329,6 +333,27 @@ for usage, guardrails, and the feedback path.
 | `baseline_removed_findings` | Count of findings present in the baseline but absent from the current run |
 | `baseline_unchanged_findings` | Count of findings present in both the baseline and current run |
 | `baseline_diff_detail` | One-line added, removed, and unchanged finding summary versus the restored baseline |
+
+### Evidence state compatibility
+
+`verified` remains the legacy integrity flag. `evidence_state` names the same
+integrity step without collapsing later lint or pack gates into it.
+
+| Situation | `verified` | `evidence_state` |
+| --- | --- | --- |
+| Discovery ran and found no bundles | `false` | `absent` |
+| Bundles found, integrity not yet established | `false` | `discovered` |
+| Integrity passed; a later lint or pack gate may still fail the job | `true` | `verified` |
+| Integrity rejected | `false` | `rejected` |
+
+`evidence_state=verified` means integrity verification completed. It is not a
+policy, lint, or compliance result. When discovery did not run, these outputs
+stay empty; the action does not invent `absent`.
+
+The index lists every discovered bundle and any sandbox-command bundle that
+participated, each with a workspace-relative path and the SHA-256 of the exact
+bytes later verified. The 101st bundle fails the job; the action does not
+publish a truncated index as complete.
 
 ## Permissions
 

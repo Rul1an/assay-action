@@ -224,6 +224,13 @@ Allowed language:
 - "Run a policy-as-code gate."
 - "Generate or relay evidence artifacts."
 
+Additive v3 evidence outputs (`evidence_state`, `evidence_index_path`,
+`evidence_index_digest`) describe discovery and integrity only. `verified`
+stays the legacy integrity flag: it remains `true` after a later lint or pack
+failure. An empty discovery that ran is `absent`; a job that never reached
+discovery leaves those outputs empty. These fields are not a trust score,
+whole-action verdict, or compliance claim.
+
 Disallowed without an explicit boundary:
 
 - Claims that the action proves runtime truth.

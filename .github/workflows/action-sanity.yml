@@ -35,6 +35,9 @@ jobs:
       - name: Verify authoritative gate contract
         run: bash scripts/test_authoritative_gate.sh
 
+      - name: Verify evidence index contract
+        run: bash scripts/test_evidence_index_contract.sh
+
   capability-diff-sim:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -60,12 +63,29 @@ jobs:
 
       - name: Exercise local action install path
         if: github.event_name == 'pull_request'
+        id: local-install
         uses: ./
         with:
           bundles: ".assay/evidence/*.tar.gz"
           fail_on: error
           sarif: false
           comment_diff: false
+
+      - name: Assert additive evidence outputs (no bundles)
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          EVIDENCE_STATE: ${{ steps.local-install.outputs.evidence_state }}
+          VERIFIED: ${{ steps.local-install.outputs.verified }}
+          INDEX_PATH: ${{ steps.local-install.outputs.evidence_index_path }}
+          INDEX_DIGEST: ${{ steps.local-install.outputs.evidence_index_digest }}
+        run: |
+          set -euo pipefail
+          test "$EVIDENCE_STATE" = "absent"
+          test "$VERIFIED" = "false"
+          test -n "$INDEX_PATH"
+          test -n "$INDEX_DIGEST"
+          test -f "$INDEX_PATH"
 
       - name: Exercise released action install path
         if: github.event_name != 'pull_request'
@@ -123,6 +143,7 @@ jobs:
           echo "$PWD/bin" >> "$GITHUB_PATH"
 
       - name: Review deterministic evidence fixture with local action
+        id: local-review
         uses: ./
         with:
           version: v3.35.0
@@ -132,6 +153,21 @@ jobs:
           comment_diff: false
           baseline_key: action-sanity
           write_baseline: false
+
+      - name: Assert additive evidence outputs (fixture)
+        shell: bash
+        env:
+          EVIDENCE_STATE: ${{ steps.local-review.outputs.evidence_state }}
+          VERIFIED: ${{ steps.local-review.outputs.verified }}
+          INDEX_PATH: ${{ steps.local-review.outputs.evidence_index_path }}
+          INDEX_DIGEST: ${{ steps.local-review.outputs.evidence_index_digest }}
+        run: |
+          set -euo pipefail
+          test "$EVIDENCE_STATE" = "verified"
+          test "$VERIFIED" = "true"
+          test -n "$INDEX_DIGEST"
+          test -f "$INDEX_PATH"
+          python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["complete"] is True; assert len(d["bundles"])==1' "$INDEX_PATH"
 
   baseline-delta-trusted:
     if: github.event_name != 'pull_request'
