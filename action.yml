@@ -49,7 +49,7 @@ inputs:
     required: false
     default: ''
   fail_on:
-    description: 'Fail threshold: error, warn, info, none'
+    description: 'Fail threshold: error, warn (or warning), info, none. Validated by the CLI, so an unrecognized value fails the run instead of disabling the gate.'
     required: false
     default: 'error'
   sarif:
@@ -239,7 +239,6 @@ runs:
       shell: bash
       env:
         ASSAY_VERSION_INPUT: ${{ inputs.version }}
-        GITHUB_TOKEN: ${{ github.token }}
       run: |
         "$GITHUB_ACTION_PATH/resolve-version.sh" "$ASSAY_VERSION_INPUT"
 
@@ -487,13 +486,29 @@ runs:
         # Lint all bundles (one at a time, aggregate results)
         TOTAL_ERRORS=0
         TOTAL_WARNS=0
+        GATE_HITS=0
         echo '{"findings":[]}' > "$REPORTS_DIR/lint.json"
 
         for bundle in $BUNDLES; do
           echo "Linting: $bundle"
 
-          # Lint to JSON for counting
-          LINT_JSON=$(assay evidence lint --format json "$bundle" 2>/dev/null || echo '{"findings":[]}')
+          # $FAIL_ON goes to the CLI unmodified so the vocabulary has one definition.
+          set +e
+          LINT_JSON=$(assay evidence lint --format json --fail-on "$FAIL_ON" "$bundle" 2>"$TEMP_DIR/lint.err")
+          LINT_CODE=$?
+          set -e
+
+          case "$LINT_CODE" in
+            0) ;;
+            1) GATE_HITS=$((GATE_HITS + 1)) ;;
+            *)
+              echo "::error::Could not apply fail_on='$FAIL_ON' to $bundle (assay exited $LINT_CODE)"
+              cat "$TEMP_DIR/lint.err" >&2 || true
+              exit 2
+              ;;
+          esac
+
+          [ -n "$LINT_JSON" ] || LINT_JSON='{"findings":[]}'
 
           # Count findings in this bundle
           BUNDLE_ERRORS=$(echo "$LINT_JSON" | jq '[.findings // [] | .[] | select(.severity == "error")] | length' 2>/dev/null || echo "0")
@@ -532,32 +547,12 @@ runs:
         echo "findings_error=$ERRORS" >> $GITHUB_OUTPUT
         echo "findings_warn=$WARNS" >> $GITHUB_OUTPUT
 
-        # Apply fail_on threshold
-        case "$FAIL_ON" in
-          error)
-            if [ "$ERRORS" -gt 0 ]; then
-              echo "::error::$ERRORS error-level findings exceed threshold"
-              exit 1
-            fi
-            ;;
-          warn)
-            if [ "$ERRORS" -gt 0 ] || [ "$WARNS" -gt 0 ]; then
-              echo "::error::$ERRORS errors, $WARNS warnings exceed threshold"
-              exit 1
-            fi
-            ;;
-          info)
-            # Fail on any finding (info not yet implemented, treat as warn)
-            if [ "$ERRORS" -gt 0 ] || [ "$WARNS" -gt 0 ]; then
-              exit 1
-            fi
-            ;;
-          none)
-            # Never fail on findings
-            ;;
-        esac
-
         echo "diff_summary=Verified: $VERIFIED, Errors: $ERRORS, Warnings: $WARNS" >> $GITHUB_OUTPUT
+
+        if [ "$GATE_HITS" -gt 0 ]; then
+          echo "::error::$GATE_HITS bundle(s) have findings at or above '$FAIL_ON' ($ERRORS errors, $WARNS warnings)"
+          exit 1
+        fi
 
     # =========================================================================
     # E3: SARIF Upload
@@ -874,6 +869,7 @@ runs:
       shell: bash
       env:
         PACKS: ${{ inputs.pack }}
+        FAIL_ON: ${{ inputs.fail_on }}
         BUNDLES_FILE: ${{ steps.discover.outputs.bundles_file }}
         REPORTS_DIR: ${{ steps.process.outputs.reports_dir }}
       run: |
@@ -966,6 +962,27 @@ runs:
         echo "pack_articles=$PACK_ARTICLES" >> $GITHUB_OUTPUT
         echo "pack_status=success" >> $GITHUB_OUTPUT
         echo "pack_error_kind=" >> $GITHUB_OUTPUT
+
+        if [ "$FAIL_ON" != "none" ]; then
+          PACK_GATE_HITS=0
+          while IFS= read -r bundle || [ -n "$bundle" ]; do
+            [ -z "$bundle" ] && continue
+            set +e
+            assay evidence lint --fail-on "$FAIL_ON" --pack "$PACKS" "$bundle" >/dev/null 2>&1
+            GATE_CODE=$?
+            set -e
+            if [ "$GATE_CODE" -eq 1 ]; then
+              echo "::error::Compliance pack findings at or above '$FAIL_ON' in $bundle"
+              PACK_GATE_HITS=$((PACK_GATE_HITS + 1))
+            elif [ "$GATE_CODE" -ne 0 ]; then
+              echo "::error::Could not apply fail_on='$FAIL_ON' to pack lint of $bundle (assay exited $GATE_CODE)"
+              exit 2
+            fi
+          done < "$BUNDLES_FILE"
+          if [ "$PACK_GATE_HITS" -gt 0 ]; then
+            exit 1
+          fi
+        fi
 
         # Store disclaimer for Job Summary (multiline safe)
         if [ -n "$DISCLAIMER" ]; then

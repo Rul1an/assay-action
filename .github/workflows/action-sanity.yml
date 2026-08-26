@@ -32,6 +32,9 @@ jobs:
       - name: Verify release install contract
         run: bash scripts/test_release_install_contract.sh
 
+      - name: Verify authoritative gate contract
+        run: bash scripts/test_authoritative_gate.sh
+
   capability-diff-sim:
     runs-on: ubuntu-latest
     timeout-minutes: 10
