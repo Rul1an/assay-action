@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Structural contract for published-tag-canary.yml: scheduled @v3/@v2 stay
-# floating; workflow_dispatch can pin an immutable candidate by SHA.
+# floating; workflow_dispatch on a v3.x.y tag plus expected_sha runs ./ .
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,17 +25,16 @@ assert_canary_contract() {
     triggers = w["on"] || w[true]
     abort("workflow on: block missing") if triggers.nil?
     dispatch = triggers.fetch("workflow_dispatch").fetch("inputs")
-    %w[candidate_ref expected_sha].each do |name|
-      abort("workflow_dispatch missing #{name}") unless dispatch.key?(name)
-    end
+    abort("workflow_dispatch must not accept candidate_ref") if dispatch.key?("candidate_ref")
+    abort("workflow_dispatch missing expected_sha") unless dispatch.key?("expected_sha")
 
     jobs = w.fetch("jobs")
     v3 = jobs.fetch("assay-action-v3")
     v3_uses = v3.fetch("steps").map { |s| s["uses"] }.compact
     abort("scheduled v3 lane lost Rul1an/assay-action@v3") unless
       v3_uses.any? { |u| u.start_with?("Rul1an/assay-action@v3") }
-    abort("scheduled v3 lane must not use ./candidate-action") if
-      v3_uses.include?("./candidate-action")
+    abort("scheduled v3 lane must not use a local action path") if
+      v3_uses.any? { |u| u.start_with?("./") }
 
     v2 = jobs.fetch("assay-action-v2")
     v2_uses = v2.fetch("steps").map { |s| s["uses"] }.compact
@@ -43,34 +42,51 @@ assert_canary_contract() {
       v2_uses.any? { |u| u.start_with?("Rul1an/assay-action@v2") }
 
     candidate = jobs.fetch("assay-action-candidate")
-    abort("candidate job must be dispatch-only") unless
-      candidate.fetch("if").include?("workflow_dispatch") &&
-      candidate.fetch("if").include?("candidate_ref") &&
-      candidate.fetch("if").include?("expected_sha")
+    gate = candidate.fetch("if")
+    abort("candidate job must require workflow_dispatch") unless gate.include?("workflow_dispatch")
+    abort("non-tag dispatch must not run the candidate job") unless
+      gate.include?("github.ref_type") && gate.include?("tag")
+    abort("candidate job must require nonempty expected_sha") unless gate.include?("expected_sha")
+    abort("candidate job must not gate on candidate_ref") if gate.include?("candidate_ref")
 
     steps = candidate.fetch("steps")
+    abort("candidate job must not mention candidate_ref") if
+      steps.any? { |step| step.to_s.include?("candidate_ref") }
+    abort("candidate job must not checkout an input-controlled ref") if
+      steps.any? { |step|
+        step["uses"].to_s.include?("actions/checkout") &&
+          step.dig("with", "ref").to_s.include?("inputs.")
+      }
+    abort("candidate job must not use a secondary checkout path") if
+      steps.any? { |step| step.dig("with", "path").to_s.include?("candidate") }
+
     checkout = steps.find do |step|
-      uses = step["uses"].to_s
-      uses.include?("actions/checkout") &&
-        step.dig("with", "repository") == "Rul1an/assay-action" &&
-        step.dig("with", "path") == "candidate-action" &&
-        step.dig("with", "ref").to_s.include?("inputs.candidate_ref")
+      step["uses"].to_s.include?("actions/checkout") &&
+        step.dig("with", "persist-credentials") == false &&
+        !step.dig("with", "ref") &&
+        !step.dig("with", "repository") &&
+        !step.dig("with", "path")
     end
-    abort("candidate job must checkout Rul1an/assay-action at candidate_ref into candidate-action") if
+    abort("candidate job must checkout the triggering ref with persist-credentials: false") if
       checkout.nil?
 
     bind = steps.find do |step|
       env = step["env"] || {}
+      run = step.fetch("run", "")
       env.value?("${{ inputs.expected_sha }}") &&
-        step.fetch("run", "").include?("rev-parse") &&
-        step.fetch("run").include?("candidate-action")
+        run.include?("rev-parse HEAD") &&
+        !run.include?("candidate-action") &&
+        (run.include?("ref_name") || run.include?("REF_NAME") || run.include?("GITHUB_REF_NAME")) &&
+        run.match?(/v3\\\.\[0-9\]\+|v3\.x\.y|\^v3\\/)
     end
-    abort("candidate job must bind resolved HEAD to expected_sha") if bind.nil?
+    abort("candidate job must bind HEAD to expected_sha and the v3.x.y tag name") if bind.nil?
 
-    run = steps.find { |step| step["uses"] == "./candidate-action" }
-    abort("candidate job must execute uses: ./candidate-action") if run.nil?
+    run = steps.find { |step| step["uses"] == "./" }
+    abort("candidate job must execute uses: ./") if run.nil?
     abort("candidate uses: must not be a floating tag") if
       steps.any? { |step| step["uses"].to_s.start_with?("Rul1an/assay-action@") }
+    abort("candidate uses: must not be ./candidate-action") if
+      steps.any? { |step| step["uses"].to_s.include?("candidate-action") }
 
     id = run.fetch("id")
     assert_step = steps.find do |step|
@@ -80,7 +96,7 @@ assert_canary_contract() {
         env.values.any? { |v| v.to_s.include?("steps.#{id}.outputs.evidence_index_path") } &&
         env.values.any? { |v| v.to_s.include?("steps.#{id}.outputs.evidence_index_digest") }
     end
-    abort("candidate job must assert evidence outputs from ./candidate-action") if assert_step.nil?
+    abort("candidate job must assert evidence outputs from uses: ./") if assert_step.nil?
     body = assert_step.fetch("run")
     abort("candidate assert must recompute the index digest") unless
       body.include?("sha256") || body.include?("shasum")
@@ -103,15 +119,47 @@ mutate_expect_fail() {
   echo "MUTATION BIT: $name"
 }
 
-mut_drop_candidate_ref() {
+mut_restore_candidate_ref_checkout() {
   python3 - "$CANARY" <<'PY'
 from pathlib import Path
 import sys
 p = Path(sys.argv[1])
 text = p.read_text()
-if "candidate_ref:" not in text:
-    raise SystemExit("candidate_ref missing")
-p.write_text(text.replace("candidate_ref:", "unused_ref:", 1))
+if "candidate_ref:" in text:
+    raise SystemExit("candidate_ref already present")
+text = text.replace(
+    "      expected_sha:",
+    "      candidate_ref:\n        description: injected\n        required: false\n        default: \"\"\n      expected_sha:",
+    1,
+)
+old = "        with:\n          persist-credentials: false\n"
+new = (
+    "        with:\n"
+    "          repository: Rul1an/assay-action\n"
+    "          ref: ${{ inputs.candidate_ref }}\n"
+    "          path: candidate-action\n"
+    "          persist-credentials: false\n"
+)
+# Inject into the candidate job checkout only (last persist-credentials checkout).
+idx = text.rfind(old)
+if idx < 0:
+    raise SystemExit("standard checkout block not found")
+p.write_text(text[:idx] + new + text[idx + len(old) :])
+PY
+}
+
+mut_drop_tag_gate() {
+  python3 - "$CANARY" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+old = "github.ref_type == 'tag'"
+if old not in text:
+    old = 'github.ref_type == "tag"'
+if old not in text:
+    raise SystemExit("tag gate not found")
+p.write_text(text.replace(old, "true", 1))
 PY
 }
 
@@ -121,9 +169,12 @@ from pathlib import Path
 import sys
 p = Path(sys.argv[1])
 text = p.read_text()
-if "uses: ./candidate-action" not in text:
-    raise SystemExit("./candidate-action missing")
-p.write_text(text.replace("uses: ./candidate-action", "uses: Rul1an/assay-action@v3", 1))
+if "uses: ./" not in text.split("assay-action-candidate", 1)[-1]:
+    raise SystemExit("uses: ./ missing from candidate job")
+# Replace only the candidate-job local uses.
+head, tail = text.split("assay-action-candidate", 1)
+tail = tail.replace("uses: ./", "uses: Rul1an/assay-action@v3", 1)
+p.write_text(head + "assay-action-candidate" + tail)
 PY
 }
 
@@ -133,9 +184,9 @@ from pathlib import Path
 import sys
 p = Path(sys.argv[1])
 text = p.read_text()
-if "rev-parse" not in text:
+if "rev-parse HEAD" not in text:
     raise SystemExit("sha bind missing")
-p.write_text(text.replace("rev-parse", "rev-list", 1))
+p.write_text(text.replace("rev-parse HEAD", "rev-list --max-count=1 HEAD", 1))
 PY
 }
 
@@ -160,7 +211,7 @@ main() {
   if ! assert_canary_contract "$CANARY"; then
     fail "published-tag-canary.yml immutable candidate contract"
   else
-    pass "published-tag-canary.yml pins an immutable candidate job"
+    pass "published-tag-canary.yml pins a tag-gated local candidate job"
   fi
 
   if [[ "$failed" -ne 0 ]]; then
@@ -174,7 +225,8 @@ main() {
       exit 1
     fi
     echo "MUTATION CONTROL: no-op stayed green"
-    mutate_expect_fail "drop-candidate-ref" mut_drop_candidate_ref
+    mutate_expect_fail "restore-candidate-ref-checkout" mut_restore_candidate_ref_checkout
+    mutate_expect_fail "drop-tag-gate" mut_drop_tag_gate
     mutate_expect_fail "candidate-uses-floating-v3" mut_candidate_uses_v3
     mutate_expect_fail "drop-sha-bind" mut_drop_sha_bind
     mutate_expect_fail "drop-output-asserts" mut_drop_output_asserts
