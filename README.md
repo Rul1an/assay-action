@@ -28,10 +28,16 @@ inputs:
 - `attest-key` — sign the bundle's manifest as an in-toto/DSSE attestation via
   `assay evidence attest`, exposed as the `attestation_envelope` output.
 
-Both are off by default, so existing workflows keep working. Pin `@v3` for the
-current action. The older `@v2` "Evidence Artifacts" line, which had `mode`/`run`
-inputs this action does not carry, remains available for workflows that depend on
-it.
+Both are off by default. Pin `@v3` for the current action. The older `@v2`
+"Evidence Artifacts" line, which had `mode`/`run` inputs this action does not
+carry, remains available for workflows that depend on it.
+
+When `sandbox-command` is set, the action writes the sandbox bundle into the
+workspace at `.assay/sandbox-command/evidence.tar.gz` and includes that file in
+the same verify and lint path as discovered bundles. A verify failure or a lint
+finding at `fail_on` can fail the job. Earlier v3 releases linted the sandbox
+bundle from the runner temp directory only and did not put it on that path, so
+the same command could finish green.
 
 ### v3.0.2 install hardening
 
@@ -302,6 +308,7 @@ for usage, guardrails, and the feedback path.
 | --- | --- | --- |
 | `bundles` | auto-discover | Glob pattern for evidence bundles |
 | `fail_on` | `error` | Fail threshold: `error`, `warn` (or `warning`), `info`, `none`. The CLI validates the value. |
+| `evidence_mode` | `optional` | `optional` or `required`. `required` fails when discovery finds no bundles. Empty, whitespace-only, and unrecognized values fail closed. The default is declared only on the Action input. |
 | `sarif` | `true` | Upload SARIF to GitHub code scanning |
 | `category` | auto-generated | SARIF category |
 | `baseline_key` | repository key | Baseline cache lookup key |
@@ -316,7 +323,10 @@ for usage, guardrails, and the feedback path.
 
 | Output | Description |
 | --- | --- |
-| `verified` | `true` if all bundles passed verification |
+| `verified` | `true` if all indexed bundles passed integrity verification. Completed discovery with zero bundles emits the literal `false`, not an empty string. |
+| `evidence_state` | `absent`, `discovered`, `verified`, or `rejected`. Empty when discovery produced no determination — it never ran, or it failed before indexing completed. |
+| `evidence_index_path` | Workspace-relative path to the bounded evidence index. Populated whenever discovery completes, including optional zero evidence. |
+| `evidence_index_digest` | SHA-256 of the exact evidence-index bytes. Populated with the path whenever discovery completes. |
 | `findings_error` | Count of error-level findings |
 | `findings_warn` | Count of warning-level findings |
 | `findings_info` | Count of info-level findings |
@@ -329,6 +339,35 @@ for usage, guardrails, and the feedback path.
 | `baseline_removed_findings` | Count of findings present in the baseline but absent from the current run |
 | `baseline_unchanged_findings` | Count of findings present in both the baseline and current run |
 | `baseline_diff_detail` | One-line added, removed, and unchanged finding summary versus the restored baseline |
+
+### Evidence state compatibility
+
+`verified` remains the legacy integrity flag. `evidence_state` names the same
+integrity step without collapsing later lint or pack gates into it.
+
+| Situation | `verified` | `evidence_state` |
+| --- | --- | --- |
+| Discovery ran and found no bundles | `false` | `absent` |
+| Bundles found, integrity not yet established | `false` | `discovered` |
+| Integrity passed; a later lint or pack gate may still fail the job | `true` | `verified` |
+| Integrity rejected | `false` | `rejected` |
+| Discovery did not complete | empty | empty |
+
+`evidence_state=verified` means integrity verification completed. It is not a
+policy, lint, or compliance result. When discovery did not run or failed before
+indexing completed, these outputs stay empty; the action does not invent
+`absent`.
+
+A successful optional run with zero evidence writes a deterministic empty
+index (`bundles=[]`, `complete=true`), `evidence_state=absent`, and
+`verified=false`. A missing index means discovery did not complete. `complete`
+is true when every indexed row is `verified` or `rejected`, or when the
+completed index has no rows.
+
+The index lists every discovered bundle and any sandbox-command bundle that
+participated, each with a workspace-relative path and the SHA-256 of the exact
+bytes later verified. The 101st bundle fails the job; the action does not
+publish a truncated index as complete.
 
 ## Permissions
 
