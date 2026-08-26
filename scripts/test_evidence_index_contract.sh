@@ -175,6 +175,18 @@ assert_action_evidence_wiring() {
     after_lint = process_run[lint_at..]
     abort("process must not flip verified false after integrity") if
       after_lint.include?("verified=false")
+    abort("process must stay skipped when discovery is empty") unless
+      process["if"] == "steps.discover.outputs.found == " + 39.chr + "true" + 39.chr
+    abort("process must not invent a BUNDLES array") if
+      process_run.include?("BUNDLES=()") || process_run.include?("BUNDLES+=(")
+    lint_section = process_run[lint_at..]
+    abort("lint pass must while-read BUNDLES_FILE, not $BUNDLES") unless
+      lint_section.include?(%q{while IFS= read -r bundle || [ -n "$bundle" ];}) &&
+      lint_section.include?(%q{done < "$BUNDLES_FILE"})
+    abort("lint pass still iterates $BUNDLES") if
+      lint_section.match?(/for bundle in (\$BUNDLES|"\$\{BUNDLES\[@\]\}")/)
+    abort("process must not invent a second bundle parser") if
+      process_run.include?("compgen -G") || process_run.include?("head -100")
 
     finalize = by_id.fetch("finalize-evidence")
     abort("finalize-evidence must run if: always()") unless finalize["if"] == "always()"
@@ -490,6 +502,141 @@ assert d["bundles"][0]["sha256"]==sys.argv[2]
   pass "seal keeps exact-byte SHA-256 after integrity"
 }
 
+extract_process_run() {
+  local dest="$1"
+  ruby -ryaml -e '
+    action = YAML.safe_load_file(ARGV.fetch(0), aliases: true)
+    step = action.fetch("runs").fetch("steps").find { |s| s["id"] == "process" }
+    abort("missing process step") if step.nil?
+    File.write(ARGV.fetch(1), step.fetch("run"))
+  ' "$ACTION" "$dest"
+}
+
+install_sanity_assay() {
+  local bin="$1"
+  mkdir -p "$bin"
+  cat >"$bin/assay" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "--version" ]; then
+  echo "assay 3.35.0"
+  exit 0
+fi
+if [ "${1:-}" = "evidence" ] && [ "${2:-}" = "verify" ]; then
+  exit 0
+fi
+if [ "${1:-}" = "evidence" ] && [ "${2:-}" = "lint" ] && [ "${3:-}" = "--format" ] && [ "${4:-}" = "json" ]; then
+  printf '%s\n' '{"findings":[]}'
+  exit 0
+fi
+if [ "${1:-}" = "evidence" ] && [ "${2:-}" = "lint" ] && [ "${3:-}" = "--format" ] && [ "${4:-}" = "sarif" ]; then
+  printf '%s\n' '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"Assay Action Sanity","informationUri":"https://github.com/Rul1an/assay-action"}},"results":[]}]}'
+  exit 0
+fi
+echo "unsupported assay sanity command: $*" >&2
+exit 2
+SH
+  chmod +x "$bin/assay"
+}
+
+run_process_fixture() {
+  local ws="$1"
+  local raw_list="$2"
+  local log="$3"
+  local out="$ws/github-output.txt"
+  local script="$TMP_DIR/process-step.sh"
+  extract_process_run "$script"
+  install_sanity_assay "$ws/bin"
+  mkdir -p "$ws/.assay-reports" "$ws/tmp"
+  : >"$out"
+  local indexed="$ws/index-out.txt"
+  : >"$indexed"
+  if ! WORKSPACE="$ws" EVIDENCE_MODE="optional" BUNDLES_FILE="$raw_list" \
+    INDEX_PATH="$ws/.assay-reports/evidence-index.json" \
+    LIST_PATH="$ws/.assay-reports/assay-bundles.txt" \
+    GITHUB_OUTPUT="$indexed" \
+    bash "$INDEX_SH" index >"$ws/index.log" 2>&1
+  then
+    echo "index step failed before process" >&2
+    cat "$ws/index.log" >&2
+    return 1
+  fi
+  local list_path="$ws/.assay-reports/assay-bundles.txt"
+  (
+    cd "$ws"
+    PATH="$ws/bin:$PATH" \
+      GITHUB_WORKSPACE="$ws" \
+      GITHUB_ACTION_PATH="$REPO_ROOT" \
+      GITHUB_OUTPUT="$out" \
+      BUNDLES_FILE="$list_path" \
+      INDEX_PATH=".assay-reports/evidence-index.json" \
+      RUNNER_TEMP="$ws/tmp" \
+      FAIL_ON="error" \
+      bash "$script"
+  ) >"$log" 2>&1
+}
+
+test_process_lints_one_bundle() {
+  local ws bundles log
+  ws="$(new_workspace)"
+  write_bundle "$ws/.assay/evidence/noop.tar.gz" ""
+  bundles="$ws/raw.txt"
+  printf '%s\n' ".assay/evidence/noop.tar.gz" >"$bundles"
+  log="$ws/process.log"
+  if ! run_process_fixture "$ws" "$bundles" "$log"; then
+    fail "one-bundle lint-pass failed (list-file read)"
+    cat "$log" >&2 || true
+    return
+  fi
+  if ! grep -Fq -- "Linting: .assay/evidence/noop.tar.gz" "$log"; then
+    fail "one-bundle lint-pass did not read the list file"
+    return
+  fi
+  require_output "$ws/github-output.txt" "verified=true" || {
+    fail "one-bundle process lost verified=true"
+    return
+  }
+  pass "one bundle is linted via BUNDLES_FILE"
+}
+
+test_process_lints_path_with_space() {
+  local ws bundles log
+  ws="$(new_workspace)"
+  write_bundle "$ws/.assay/evidence/no op.tar.gz" "space-bytes"
+  bundles="$ws/raw.txt"
+  printf '%s\n' ".assay/evidence/no op.tar.gz" >"$bundles"
+  log="$ws/process.log"
+  if ! run_process_fixture "$ws" "$bundles" "$log"; then
+    fail "space-path lint-pass failed"
+    cat "$log" >&2 || true
+    return
+  fi
+  if ! grep -Fq -- "Linting: .assay/evidence/no op.tar.gz" "$log"; then
+    fail "space-path was not linted as one list-file entry"
+    return
+  fi
+  if grep -Fq -- "Linting: .assay/evidence/no" "$log" &&
+    ! grep -Fq -- "Linting: .assay/evidence/no op.tar.gz" "$log"
+  then
+    fail "space-path was word-split before lint"
+    return
+  fi
+  pass "path with a space is linted via BUNDLES_FILE"
+}
+
+test_empty_discovery_skips_process() {
+  # shellcheck disable=SC2016 # Literal Action source, not a shell expansion.
+  if ! grep -Fq -- "if: steps.discover.outputs.found == 'true'" "$ACTION"; then
+    fail "process is no longer skipped when discovery is empty"
+    return
+  fi
+  if grep -Fq -- "BUNDLES=()" "$ACTION"; then
+    fail "empty discovery was patched with a BUNDLES array"
+    return
+  fi
+  pass "empty discovery skips process instead of an empty array"
+}
+
 run_positive_suite() {
   require_file "$INDEX_SH"
   require_file "$ACTION"
@@ -511,6 +658,9 @@ run_positive_suite() {
   test_safe_paths
   test_finalize_mapping
   test_seal_keeps_indexed_digest_binding
+  test_process_lints_one_bundle
+  test_process_lints_path_with_space
+  test_empty_discovery_skips_process
   if [[ "$failed" -ne 0 ]]; then
     echo "$failed evidence-index check(s) failed" >&2
     return 1
@@ -643,6 +793,35 @@ p.write_text(text)
 PY
 }
 
+mut_lint_pass_uses_bundles_var() {
+  python3 - "$ACTION" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+needle = "        # Lint all bundles (one at a time, aggregate results)"
+idx = text.find(needle)
+if idx < 0:
+    raise SystemExit("lint pass not found")
+rest = text[idx:]
+old_loop = (
+    '        while IFS= read -r bundle || [ -n "$bundle" ]; do\n'
+    '          [ -z "$bundle" ] && continue\n'
+    '          echo "Linting: $bundle"\n'
+)
+if old_loop not in rest:
+    raise SystemExit("lint while-read not found")
+p.write_text(
+    text[:idx]
+    + rest.replace(
+        old_loop,
+        '        for bundle in $BUNDLES; do\n          echo "Linting: $bundle"\n',
+        1,
+    )
+)
+PY
+}
+
 mut_skip_assert() {
   python3 - "$INDEX_SH" <<'PY'
 from pathlib import Path
@@ -677,6 +856,7 @@ run_mutations() {
   mutate_expect_fail "flip-verified-after-integrity" mut_flip_verified_after_integrity
   mutate_expect_fail "allow-101st" mut_allow_101
   mutate_expect_fail "accept-between-index-mutation" mut_skip_assert
+  mutate_expect_fail "lint-pass-uses-BUNDLES" mut_lint_pass_uses_bundles_var
 }
 
 main() {

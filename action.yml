@@ -520,7 +520,8 @@ runs:
         GATE_HITS=0
         echo '{"findings":[]}' > "$REPORTS_DIR/lint.json"
 
-        for bundle in $BUNDLES; do
+        while IFS= read -r bundle || [ -n "$bundle" ]; do
+          [ -z "$bundle" ] && continue
           echo "Linting: $bundle"
 
           # $FAIL_ON goes to the CLI unmodified so the vocabulary has one definition.
@@ -554,7 +555,7 @@ runs:
           # Generate SARIF for this bundle
           assay evidence lint --format sarif "$bundle" > "$REPORTS_DIR/lint-$(basename "$bundle" .tar.gz).sarif" 2>/dev/null || true
 
-        done
+        done < "$BUNDLES_FILE"
 
         # Merge SARIF files if multiple
         FIRST_SARIF=$(ls "$REPORTS_DIR"/*.sarif 2>/dev/null | head -1)
