@@ -49,7 +49,7 @@ inputs:
     required: false
     default: ''
   fail_on:
-    description: 'Fail threshold: error, warn, info, none'
+    description: 'Fail threshold: error, warn (alias: warning), info, none'
     required: false
     default: 'error'
   sarif:
@@ -239,7 +239,6 @@ runs:
       shell: bash
       env:
         ASSAY_VERSION_INPUT: ${{ inputs.version }}
-        GITHUB_TOKEN: ${{ github.token }}
       run: |
         "$GITHUB_ACTION_PATH/resolve-version.sh" "$ASSAY_VERSION_INPUT"
 
@@ -487,6 +486,7 @@ runs:
         # Lint all bundles (one at a time, aggregate results)
         TOTAL_ERRORS=0
         TOTAL_WARNS=0
+        TOTAL_INFOS=0
         echo '{"findings":[]}' > "$REPORTS_DIR/lint.json"
 
         for bundle in $BUNDLES; do
@@ -498,9 +498,11 @@ runs:
           # Count findings in this bundle
           BUNDLE_ERRORS=$(echo "$LINT_JSON" | jq '[.findings // [] | .[] | select(.severity == "error")] | length' 2>/dev/null || echo "0")
           BUNDLE_WARNS=$(echo "$LINT_JSON" | jq '[.findings // [] | .[] | select(.severity == "warning")] | length' 2>/dev/null || echo "0")
+          BUNDLE_INFOS=$(echo "$LINT_JSON" | jq '[.findings // [] | .[] | select(.severity == "info")] | length' 2>/dev/null || echo "0")
 
           TOTAL_ERRORS=$((TOTAL_ERRORS + BUNDLE_ERRORS))
           TOTAL_WARNS=$((TOTAL_WARNS + BUNDLE_WARNS))
+          TOTAL_INFOS=$((TOTAL_INFOS + BUNDLE_INFOS))
 
           # Append findings to aggregate
           echo "$LINT_JSON" | jq '.findings // []' >> "$TEMP_DIR/all-findings.json" 2>/dev/null || true
@@ -528,34 +530,12 @@ runs:
 
         ERRORS=$TOTAL_ERRORS
         WARNS=$TOTAL_WARNS
+        INFOS=$TOTAL_INFOS
 
         echo "findings_error=$ERRORS" >> $GITHUB_OUTPUT
         echo "findings_warn=$WARNS" >> $GITHUB_OUTPUT
 
-        # Apply fail_on threshold
-        case "$FAIL_ON" in
-          error)
-            if [ "$ERRORS" -gt 0 ]; then
-              echo "::error::$ERRORS error-level findings exceed threshold"
-              exit 1
-            fi
-            ;;
-          warn)
-            if [ "$ERRORS" -gt 0 ] || [ "$WARNS" -gt 0 ]; then
-              echo "::error::$ERRORS errors, $WARNS warnings exceed threshold"
-              exit 1
-            fi
-            ;;
-          info)
-            # Fail on any finding (info not yet implemented, treat as warn)
-            if [ "$ERRORS" -gt 0 ] || [ "$WARNS" -gt 0 ]; then
-              exit 1
-            fi
-            ;;
-          none)
-            # Never fail on findings
-            ;;
-        esac
+        "$GITHUB_ACTION_PATH/scripts/apply_fail_on.sh" "$FAIL_ON" "$ERRORS" "$WARNS" "$INFOS"
 
         echo "diff_summary=Verified: $VERIFIED, Errors: $ERRORS, Warnings: $WARNS" >> $GITHUB_OUTPUT
 
@@ -874,6 +854,7 @@ runs:
       shell: bash
       env:
         PACKS: ${{ inputs.pack }}
+        FAIL_ON: ${{ inputs.fail_on }}
         BUNDLES_FILE: ${{ steps.discover.outputs.bundles_file }}
         REPORTS_DIR: ${{ steps.process.outputs.reports_dir }}
       run: |
@@ -966,6 +947,11 @@ runs:
         echo "pack_articles=$PACK_ARTICLES" >> $GITHUB_OUTPUT
         echo "pack_status=success" >> $GITHUB_OUTPUT
         echo "pack_error_kind=" >> $GITHUB_OUTPUT
+
+        PACK_ERRORS=$(jq '[.runs[]?.results[]? | select((.level // "warning") == "error")] | length' "$SARIF" 2>/dev/null || echo "0")
+        PACK_WARNS=$(jq '[.runs[]?.results[]? | select((.level // "warning") == "warning")] | length' "$SARIF" 2>/dev/null || echo "0")
+        PACK_INFOS=$(jq '[.runs[]?.results[]? | select((.level // "warning") == "note" or (.level // "warning") == "info")] | length' "$SARIF" 2>/dev/null || echo "0")
+        "$GITHUB_ACTION_PATH/scripts/apply_fail_on.sh" "$FAIL_ON" "$PACK_ERRORS" "$PACK_WARNS" "$PACK_INFOS"
 
         # Store disclaimer for Job Summary (multiline safe)
         if [ -n "$DISCLAIMER" ]; then

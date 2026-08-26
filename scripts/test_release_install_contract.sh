@@ -257,7 +257,6 @@ assert_action_wiring() {
           "run" => %q{"$GITHUB_ACTION_PATH/resolve-version.sh" "$ASSAY_VERSION_INPUT"},
           "env" => {
             "ASSAY_VERSION_INPUT" => "${{ inputs.version }}",
-            "GITHUB_TOKEN" => "${{ github.token }}",
           },
           "if" => nil,
         },
@@ -301,7 +300,7 @@ if assert_action_wiring "$TMP_DIR/action-mutated.yml"; then
   exit 1
 fi
 
-for env_key in ASSAY_VERSION_INPUT GITHUB_TOKEN EXPECTED_VERSION; do
+for env_key in ASSAY_VERSION_INPUT EXPECTED_VERSION; do
   cp "$REPO_ROOT/action.yml" "$TMP_DIR/action-env-mutated.yml"
   sed -i.bak "s/^        ${env_key}:/        ${env_key}_MISSING:/" \
     "$TMP_DIR/action-env-mutated.yml"

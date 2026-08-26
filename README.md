@@ -301,7 +301,7 @@ for usage, guardrails, and the feedback path.
 | Input | Default | Description |
 | --- | --- | --- |
 | `bundles` | auto-discover | Glob pattern for evidence bundles |
-| `fail_on` | `error` | Fail threshold: `error`, `warn`, `info`, `none` |
+| `fail_on` | `error` | Fail threshold: `error`, `warn` (alias: `warning`), `info`, `none` |
 | `sarif` | `true` | Upload SARIF to GitHub code scanning |
 | `category` | auto-generated | SARIF category |
 | `baseline_key` | repository key | Baseline cache lookup key |
