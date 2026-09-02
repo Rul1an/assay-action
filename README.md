@@ -28,9 +28,9 @@ inputs:
 - `attest-key` — sign the bundle's manifest as an in-toto/DSSE attestation via
   `assay evidence attest`, exposed as the `attestation_envelope` output.
 
-Both are off by default. Pin `@v3` for the current action. The older `@v2`
-"Evidence Artifacts" line, which had `mode`/`run` inputs this action does not
-carry, remains available for workflows that depend on it.
+Both are off by default. Pin `@v3` for the current action. Historical commit
+`d4bd4bf47f34bbcbca2067c430d1c732c41bbb5b` had `mode`/`run` inputs; neither
+current `@v2` nor current `@v3` carries them.
 
 When `sandbox-command` is set, the action writes the sandbox bundle into the
 workspace at `.assay/sandbox-command/evidence.tar.gz` and includes that file in
@@ -98,8 +98,8 @@ schemas:
 ```
 
 Then paste the workflow below. The action installs Assay, runs your test command
-under `assay run`, verifies the generated bundles, and writes the GitHub review
-surfaces.
+under `assay sandbox`, verifies the generated bundle, and writes the GitHub
+review surfaces.
 
 ## From Zero To Evidence In CI
 
@@ -126,11 +126,9 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Capture and review evidence
-        uses: Rul1an/assay-action@v2
+        uses: Rul1an/assay-action@v3
         with:
-          # capture runs this command first; review mode only checks existing bundles.
-          mode: capture
-          run: assay run --policy policy.yaml -- pytest tests/
+          sandbox-command: assay run --policy policy.yaml -- pytest tests/
           bundles: ".assay/evidence/*.tar.gz"
           baseline_key: ${{ github.event.repository.name }}
           write_baseline: ${{ github.ref == 'refs/heads/main' }}
@@ -195,7 +193,7 @@ in an earlier test step.
 
 ```yaml
 - name: Verify evidence artifacts
-  uses: Rul1an/assay-action@v2
+  uses: Rul1an/assay-action@v3
   with:
     bundles: ".assay/evidence/*.tar.gz"
     fail_on: error
@@ -211,18 +209,17 @@ ASSAY-E003 filesystem-sensitive
 Agent attempted to read /etc/passwd outside the allowed filesystem scope.
 ```
 
-Non-MCP runs use the same review shape. For example, an OpenAI function-calling
-test that records tool calls as Assay evidence still ends in a bundle, lint
-findings, SARIF, and the same reports artifact.
+Non-MCP runs use the same review shape. An OpenAI function-calling test that
+records tool calls as Assay evidence still ends in a bundle, lint findings,
+SARIF, and the same reports artifact. Run that test in a normal workflow step
+before the v3 review step above, or use v3's `sandbox-command` input.
 
-```yaml
-- name: Capture OpenAI function-calling evidence
-  uses: Rul1an/assay-action@v2
-  with:
-    mode: capture
-    run: assay run --policy policy.yaml -- pytest tests/test_openai_function_tools.py
-    bundles: ".assay/evidence/*.tar.gz"
-```
+Historical context: commit
+[`d4bd4bf47f34bbcbca2067c430d1c732c41bbb5b`](https://github.com/Rul1an/assay-action/commit/d4bd4bf47f34bbcbca2067c430d1c732c41bbb5b)
+contained a capture example using `mode` and `run`. Neither current `@v2` nor
+current `@v3` defines those inputs, so that syntax is history, not a workflow to
+copy. Migrate by separating capture from the v3 review step or by using
+`sandbox-command`.
 
 Why it matters: this is the difference between "the test passed" and "the agent
 used a tool in a way reviewers did not approve." Assay does not claim the model
@@ -307,6 +304,7 @@ for usage, guardrails, and the feedback path.
 | Input | Default | Description |
 | --- | --- | --- |
 | `bundles` | auto-discover | Glob pattern for evidence bundles |
+| `sandbox-command` | empty | Linux-only command to run under `assay sandbox`; empty disables sandbox capture |
 | `fail_on` | `error` | Fail threshold: `error`, `warn` (or `warning`), `info`, `none`. The CLI validates the value. |
 | `evidence_mode` | `optional` | `optional` or `required`. `required` fails when discovery finds no bundles. Empty, whitespace-only, and unrecognized values fail closed. The default is declared only on the Action input. |
 | `sarif` | `true` | Upload SARIF to GitHub code scanning |
@@ -315,8 +313,6 @@ for usage, guardrails, and the feedback path.
 | `baseline_dir` | empty | Local baseline reports directory containing `lint.json` |
 | `write_baseline` | `false` | Save baseline on `main` after a successful run |
 | `comment_diff` | `true` | Post a PR comment when findings, verification failures, or baseline finding diffs exist |
-| `mode` | `review` | `review` existing bundles, or `capture` then review |
-| `run` | empty | Command that creates bundles when `mode: capture` |
 | `version` | `latest` | Assay CLI version to install |
 
 ## Outputs
@@ -421,7 +417,7 @@ become portable receipts and CI-reviewable artifacts.
 ### Fail On Warnings
 
 ```yaml
-- uses: Rul1an/assay-action@v2
+- uses: Rul1an/assay-action@v3
   with:
     fail_on: warn
 ```
@@ -429,7 +425,7 @@ become portable receipts and CI-reviewable artifacts.
 ### Pin The Assay CLI Version
 
 ```yaml
-- uses: Rul1an/assay-action@v2
+- uses: Rul1an/assay-action@v3
   with:
     version: v3.9.2
 ```
@@ -437,7 +433,7 @@ become portable receipts and CI-reviewable artifacts.
 ### Skip SARIF Upload
 
 ```yaml
-- uses: Rul1an/assay-action@v2
+- uses: Rul1an/assay-action@v3
   with:
     sarif: false
 ```
