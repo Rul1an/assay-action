@@ -11,6 +11,7 @@ class ContractError < StandardError; end
 class DocsActionContract
   ACTION = "Rul1an/assay-action"
   HISTORICAL_CAPTURE_COMMIT = "d4bd4bf47f34bbcbca2067c430d1c732c41bbb5b"
+  FORBIDDEN_EXECUTABLE_REFS = [HISTORICAL_CAPTURE_COMMIT].freeze
 
   Example = Struct.new(:name, :body, :malformed)
 
@@ -151,6 +152,10 @@ class DocsActionContract
     calls.each do |call|
       uses = call.fetch("uses")
       ref = uses.split("@", 2).last
+      if FORBIDDEN_EXECUTABLE_REFS.include?(ref)
+        errors << "#{example.name}: #{uses} is forbidden in executable examples"
+        next
+      end
       inputs = contract_inputs(ref, example.name, errors)
       with = call.fetch("with", {})
       unless with.is_a?(Hash)
@@ -306,6 +311,23 @@ malformed = readme + <<~MARKDOWN
   ```
 MARKDOWN
 expect_invalid("malformed executable fence fails", malformed, action, repo, /cannot parse/)
+
+historical_executable = readme + <<~MARKDOWN
+
+  ```yaml
+  - uses: Rul1an/assay-action@#{DocsActionContract::HISTORICAL_CAPTURE_COMMIT}
+    with:
+      mode: capture
+      run: echo historical
+  ```
+MARKDOWN
+expect_invalid(
+  "historical capture commit is prose-only",
+  historical_executable,
+  action,
+  repo,
+  /forbidden in executable examples/
+)
 
 historical_comment = readme + <<~MARKDOWN
 
