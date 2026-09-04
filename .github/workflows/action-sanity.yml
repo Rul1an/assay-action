@@ -176,15 +176,15 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.assay/bin:$PATH"
-          mkdir -p .assay/sandbox .assay/evidence
+          mkdir -p .assay/sandbox .assay/evidence/nested
           assay sandbox --dry-run \
             --profile .assay/sandbox/profile.yaml \
-            --bundle .assay/evidence/sandbox.tar.gz \
+            --bundle .assay/evidence/nested/sandbox.tar.gz \
             -- true
-          test -f .assay/evidence/sandbox.tar.gz
-          PRODUCED_SHA=$(sha256sum .assay/evidence/sandbox.tar.gz | awk '{print $1}')
+          test -f .assay/evidence/nested/sandbox.tar.gz
+          PRODUCED_SHA=$(sha256sum .assay/evidence/nested/sandbox.tar.gz | awk '{print $1}')
           echo "bundle_sha=$PRODUCED_SHA" >> "$GITHUB_OUTPUT"
-          echo "Produced .assay/evidence/sandbox.tar.gz sha256=$PRODUCED_SHA"
+          echo "Produced .assay/evidence/nested/sandbox.tar.gz sha256=$PRODUCED_SHA"
 
       - name: Review auto-discovered sandbox evidence
         id: review
@@ -220,7 +220,7 @@ jobs:
           assert hashlib.sha256(raw).hexdigest() == digest
           assert len(d["bundles"]) == 1
           row = d["bundles"][0]
-          assert row["path"] == ".assay/evidence/sandbox.tar.gz"
+          assert row["path"] == ".assay/evidence/nested/sandbox.tar.gz"
           assert row["source"] == "discovered"
           assert row["integrity"] == "verified"
           assert row["sha256"] == produced

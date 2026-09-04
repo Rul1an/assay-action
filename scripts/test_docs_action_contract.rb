@@ -354,25 +354,30 @@ puts "PASS: prose/comment-only history stays outside executable examples"
 # ---------------------------------------------------------------------------
 
 module ExecutableEvidenceRemediation
+  # One shared remediation/discovery recipe across notice, summary, README, and
+  # the hosted default-discovery journey. Nested under .assay/evidence/ so the
+  # journey discriminates real discovery from a hardcoded flat default path.
+  DISCOVERY_BUNDLE = ".assay/evidence/nested/sandbox.tar.gz"
+  LEGACY_FLAT_BUNDLE = ".assay/evidence/sandbox.tar.gz"
+  USE_CASE_DOC = "docs/use-cases/mcp-tool-call-audit-trail-in-github-actions.md"
+
   RECIPE = <<~'SH'.chomp.freeze
-    mkdir -p .assay/sandbox .assay/evidence
+    mkdir -p .assay/sandbox .assay/evidence/nested
     assay sandbox --dry-run \
       --profile .assay/sandbox/profile.yaml \
-      --bundle .assay/evidence/sandbox.tar.gz \
+      --bundle .assay/evidence/nested/sandbox.tar.gz \
       -- true
   SH
 
   REQUIRED_TOKENS = [
-    "mkdir -p .assay/sandbox .assay/evidence",
+    "mkdir -p .assay/sandbox .assay/evidence/nested",
     "assay sandbox --dry-run",
     "--profile .assay/sandbox/profile.yaml",
-    "--bundle .assay/evidence/sandbox.tar.gz",
+    "--bundle .assay/evidence/nested/sandbox.tar.gz",
     "-- true"
   ].freeze
 
   FORBIDDEN_REMEDIATION = /Run 'assay run'|assay run --policy/
-
-  DISCOVERY_BUNDLE = ".assay/evidence/sandbox.tar.gz"
 
   module_function
 
@@ -545,15 +550,72 @@ module ExecutableEvidenceRemediation
     raise ContractError, errors.join("\n") unless errors.empty?
   end
 
-  def validate_public_contract!(readme, action, workflow)
+  def validate_use_case_public_truth!(use_case)
+    errors = []
+    doc = use_case.to_s
+    errors << "#{USE_CASE_DOC}: missing from public-contract inputs" if doc.strip.empty?
+
+    # Stale mechanism claim: action runs under assay run / captures tool calls.
+    if doc.match?(/under `assay run`|runs your test command under `assay run`/)
+      errors << "#{USE_CASE_DOC}: still claims the action runs the command under assay run"
+    end
+    if doc.match?(/`assay run`\s*\([^)]*captures tool calls|assay run.*captures tool calls and other capability events/)
+      errors << "#{USE_CASE_DOC}: overclaims tool-call capture via assay run"
+    end
+
+    # Required honest mechanism.
+    unless doc.match?(/`assay sandbox`|assay sandbox/)
+      errors << "#{USE_CASE_DOC}: must describe the assay sandbox mechanism"
+    end
+
+    # Do not claim the action captures MCP tool calls beyond the observed
+    # filesystem/network(/process) sandbox surface.
+    if doc.match?(/runs your test command under[^.\n]*(captures tool calls|tool-call capture)/i)
+      errors << "#{USE_CASE_DOC}: must not claim tool-call capture beyond the observed sandbox surface"
+    end
+
+    raise ContractError, errors.join("\n") unless errors.empty?
+  end
+
+  def validate_quickstart_coherence!(readme)
+    errors = []
+    from_scratch = readme[ /## From Scratch\n.*?(?=\n## )/m ].to_s
+    from_zero = readme[ /## From Zero To Evidence In CI\n.*?(?=\n## )/m ].to_s
+    quickstart = "#{from_scratch}\n#{from_zero}"
+
+    # Authoring = a policy.yaml fence or "start with a policy file" instruction,
+    # not an honest "no separate policy.yaml is required" non-claim.
+    authors_policy = from_scratch.match?(/```(?:ya?ml)\n(?:[^`]*\n)?#\s*policy\.yaml/) ||
+                     from_scratch.match?(/Start with a small policy file/i)
+    workflow_body = from_zero[ /```(?:ya?ml)\n(.*?)```/m, 1 ].to_s
+    uses_sandbox_command = workflow_body.match?(/sandbox-command\s*:/)
+    consumes_policy = workflow_body.match?(/policy\.yaml|\bpolicy\s*:/)
+
+    if authors_policy && uses_sandbox_command && !consumes_policy
+      errors << "From Scratch/From Zero: policy.yaml is authored but the quickstart workflow does not consume it (default sandbox-command / mcp-server-minimal path)"
+    end
+
+    if uses_sandbox_command
+      unless quickstart.match?(/\.assay\/sandbox-command\/evidence\.tar\.gz/) ||
+             readme.match?(/When `sandbox-command` is set[\s\S]*?\.assay\/sandbox-command\/evidence\.tar\.gz/)
+        errors << "From Scratch/From Zero: sandbox-command quickstart must describe the default sandbox-command evidence path"
+      end
+    end
+
+    raise ContractError, errors.join("\n") unless errors.empty?
+  end
+
+  def validate_public_contract!(readme, action, workflow, use_case)
     validate_remediation!(readme, action)
     validate_journey!(workflow)
+    validate_use_case_public_truth!(use_case)
+    validate_quickstart_coherence!(readme)
   end
 end
 
-def expect_remediation_invalid(label, readme, action, workflow, expected)
+def expect_remediation_invalid(label, readme, action, workflow, use_case, expected)
   begin
-    ExecutableEvidenceRemediation.validate_public_contract!(readme, action, workflow)
+    ExecutableEvidenceRemediation.validate_public_contract!(readme, action, workflow, use_case)
   rescue ContractError => error
     raise "#{label}: wrong failure: #{error.message}" unless error.message.match?(expected)
 
@@ -564,9 +626,11 @@ def expect_remediation_invalid(label, readme, action, workflow, expected)
 end
 
 workflow = (repo / ".github/workflows/action-sanity.yml").read
-ExecutableEvidenceRemediation.validate_public_contract!(readme, action, workflow)
+use_case = (repo / ExecutableEvidenceRemediation::USE_CASE_DOC).read
+ExecutableEvidenceRemediation.validate_public_contract!(readme, action, workflow, use_case)
 puts "PASS: released remediation recipe pinned across public surfaces"
 puts "PASS: default-discovery sandbox journey pinned"
+puts "PASS: use-case public truth + From Scratch/From Zero coherence pinned"
 
 # Must-bite mutations (shared helper — not self-satisfying)
 mut_notice = action.sub(
@@ -578,6 +642,7 @@ expect_remediation_invalid(
   readme,
   mut_notice,
   workflow,
+  use_case,
   /forbidden|assay run|missing released/
 )
 
@@ -590,6 +655,7 @@ expect_remediation_invalid(
   readme,
   mut_summary,
   workflow,
+  use_case,
   /forbidden|missing released/
 )
 
@@ -599,6 +665,7 @@ expect_remediation_invalid(
   mut_readme_recipe,
   action,
   workflow,
+  use_case,
   /forbidden|missing released|exact released/
 )
 
@@ -611,6 +678,7 @@ expect_remediation_invalid(
   readme,
   action,
   mut_wf_skip,
+  use_case,
   /producer|journey/
 )
 
@@ -623,11 +691,12 @@ expect_remediation_invalid(
   readme,
   action,
   mut_wf_fixture,
+  use_case,
   /fixture|fresh|producer/
 )
 
 mut_wf_outside = workflow.sub(
-  "--bundle .assay/evidence/sandbox.tar.gz",
+  /--bundle \.assay\/evidence\/(?:nested\/)?sandbox\.tar\.gz/,
   "--bundle /tmp/outside-sandbox.tar.gz"
 )
 expect_remediation_invalid(
@@ -635,6 +704,7 @@ expect_remediation_invalid(
   readme,
   action,
   mut_wf_outside,
+  use_case,
   /discovery|producer|journey|outside|missing/
 )
 
@@ -647,6 +717,7 @@ expect_remediation_invalid(
   readme,
   action,
   mut_wf_bundles,
+  use_case,
   /bundles must be unset|auto-discovery/
 )
 
@@ -659,6 +730,7 @@ expect_remediation_invalid(
   readme,
   action,
   mut_wf_mode,
+  use_case,
   /evidence_mode|journey|producer/
 )
 
@@ -671,7 +743,72 @@ expect_remediation_invalid(
   readme,
   action,
   mut_wf_verified2,
+  use_case,
   /integrity|per-bundle|manufactured|assert/
+)
+
+# Gap 3 discrimination: old flat discovery literal must not satisfy nested journey.
+# Behavioral via shared helper (not self-satisfying local asserts).
+if workflow.include?(ExecutableEvidenceRemediation::DISCOVERY_BUNDLE)
+  mut_wf_flat = workflow.gsub(
+    ExecutableEvidenceRemediation::DISCOVERY_BUNDLE,
+    ExecutableEvidenceRemediation::LEGACY_FLAT_BUNDLE
+  ).gsub(
+    "mkdir -p .assay/sandbox .assay/evidence/nested",
+    "mkdir -p .assay/sandbox .assay/evidence"
+  )
+  expect_remediation_invalid(
+    "mutation substitutes old flat discovery bundle path",
+    readme,
+    action,
+    mut_wf_flat,
+    use_case,
+    /producer|bundle path|discovery|assert|journey|nested/
+  )
+
+  mut_assert_flat = workflow.sub(
+    %(assert row["path"] == "#{ExecutableEvidenceRemediation::DISCOVERY_BUNDLE}"),
+    %(assert row["path"] == "#{ExecutableEvidenceRemediation::LEGACY_FLAT_BUNDLE}")
+  )
+  raise "expected nested discovery assert to be mutable" if mut_assert_flat == workflow
+  expect_remediation_invalid(
+    "mutation clears nested discovery assert to old flat path",
+    readme,
+    action,
+    mut_assert_flat,
+    use_case,
+    /assert|bind discovered path|discovery|bundle/
+  )
+end
+
+mut_use_case_run = use_case.sub(
+  "`assay sandbox`",
+  "`assay run`"
+)
+# Ensure stale assay-run overclaim present for the mutation even if doc already fixed.
+unless mut_use_case_run.match?(/under `assay run`|captures tool calls/)
+  mut_use_case_run = use_case + "\n\nThe action runs your test command under `assay run` (which captures tool calls and other capability events).\n"
+end
+expect_remediation_invalid(
+  "mutation restores assay run use-case public truth",
+  readme,
+  action,
+  workflow,
+  mut_use_case_run,
+  /assay run|tool-call|public truth|mcp-tool-call/
+)
+
+mut_scratch = readme.sub(
+  "## From Scratch\n",
+  "## From Scratch\n\nStart with a small policy file.\n\n```yaml\n# policy.yaml\nversion: \"2.0\"\n```\n\n"
+)
+expect_remediation_invalid(
+  "mutation restores unused policy.yaml From Scratch authoring",
+  mut_scratch,
+  action,
+  workflow,
+  use_case,
+  /policy\.yaml|does not consume|From Scratch|quickstart/
 )
 
 puts "docs action contract passed"

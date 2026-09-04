@@ -56,55 +56,18 @@ capability boundary.
 
 ## From Scratch
 
-Start with a small policy file. The example uses MCP filesystem-style tool names;
-replace the tool names and path pattern with the tools and workspace your agent
-is expected to use.
-
-```yaml
-# policy.yaml
-version: "2.0"
-name: "agent-ci-starter"
-
-tools:
-  allow:
-    - "read_file"
-    - "list_dir"
-  deny:
-    - "exec"
-    - "shell"
-    - "write_file"
-
-schemas:
-  read_file:
-    type: object
-    additionalProperties: false
-    properties:
-      path:
-        type: string
-        # GitHub-hosted runners use /home/runner/work/<repo>/<repo>.
-        pattern: "^(/home/runner/work/|/tmp/).*"
-        minLength: 1
-    required: ["path"]
-
-  list_dir:
-    type: object
-    additionalProperties: false
-    properties:
-      path:
-        type: string
-        pattern: "^(/home/runner/work/|/tmp/).*"
-        minLength: 1
-    required: ["path"]
-```
-
-Then paste the workflow below. The action installs Assay, runs the command under
-`assay sandbox`, verifies the generated bundle, and writes the GitHub review
-surfaces.
+Paste the workflow below for the default sandbox evidence path. With
+`sandbox-command` set, the action runs the command under `assay sandbox` using
+the CLI default profile (`mcp-server-minimal`), materializes the bundle at
+`.assay/sandbox-command/evidence.tar.gz`, verifies and lints it, and writes the
+GitHub review surfaces. No separate `policy.yaml` is required for this
+quickstart; custom policy authoring is a later step outside this default path.
 
 ## From Zero To Evidence In CI
 
 Use this when you want the whole path in one workflow: install Assay, run a
-command under `assay sandbox`, then review the produced evidence in GitHub.
+command under `assay sandbox` on the default profile, then review the produced
+sandbox-command evidence in GitHub.
 
 ```yaml
 name: assay-evidence
@@ -398,14 +361,14 @@ This action reviews evidence bundles. The Assay CLI creates them with the
 released sandbox producer:
 
 ```bash
-mkdir -p .assay/sandbox .assay/evidence
+mkdir -p .assay/sandbox .assay/evidence/nested
 assay sandbox --dry-run \
   --profile .assay/sandbox/profile.yaml \
-  --bundle .assay/evidence/sandbox.tar.gz \
+  --bundle .assay/evidence/nested/sandbox.tar.gz \
   -- true
 ```
 
-That writes a discoverable evidence bundle at `.assay/evidence/sandbox.tar.gz`.
+That writes a discoverable evidence bundle at `.assay/evidence/nested/sandbox.tar.gz`.
 The bundle attests the sandbox command's observed effects. It does not attest
 that a test suite passed.
 
