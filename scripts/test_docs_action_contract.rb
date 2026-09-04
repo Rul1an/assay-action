@@ -431,13 +431,19 @@ module ExecutableEvidenceRemediation
     surfaces = remediation_surfaces(readme, action)
     notice = surfaces.fetch("notice")
     summary = surfaces.fetch("summary")
-    unless action.include?("remediation_recipe.cmd")
-      errors << "action.yml must load #{RECIPE_FILE}"
+    cat_needle = "cat \"$GITHUB_ACTION_PATH/#{RECIPE_FILE}\""
+    unless action.include?(cat_needle)
+      errors << "action.yml must cat #{RECIPE_FILE} (real load, not a decoy mention)"
     end
-    unless notice.include?("$RECIPE") || notice.include?("remediation_recipe.cmd")
+    # Count real cats of the canonical path — decoy comments do not count.
+    real_cats = action.each_line.count { |line| line.include?(cat_needle) && !line.lstrip.start_with?("#") }
+    if real_cats < 2
+      errors << "action.yml must cat #{RECIPE_FILE} on both notice and summary emission paths"
+    end
+    unless notice.include?("$RECIPE") || notice.include?(cat_needle)
       errors << "notice: must emit via $RECIPE from #{RECIPE_FILE}"
     end
-    unless summary.include?("$RECIPE") || summary.include?("remediation_recipe.cmd")
+    unless summary.include?("$RECIPE") || summary.include?(cat_needle)
       errors << "summary: must emit via $RECIPE from #{RECIPE_FILE}"
     end
     if action.include?(recipe)
@@ -837,8 +843,77 @@ expect_remediation_invalid(
 
 exact = repo / "scripts/test_exact_remediation_recipe.sh"
 raise "missing #{exact}" unless exact.file?
+helper = exact.read
+# Independent pin: helper must actually execute action-selected bytes (not a stub exit 0).
+unless helper.include?('bash -c "$RECIPE"') && helper.include?("--no-such-flag") && helper.include?("GITHUB_ACTION_PATH")
+  raise "exact remediation helper no longer pins action-selected behavioral execution"
+end
 ok = system("bash", exact.to_s)
 raise "exact remediation recipe contract failed" unless ok
+
+# Independent behavioral execution (does not trust helper exit alone).
+recipe = ExecutableEvidenceRemediation.canonical_recipe(repo)
+raise "canonical recipe empty" if recipe.strip.empty?
+Dir.mktmpdir("exact-recipe-") do |dir|
+  bin = Pathname(dir) / "bin"
+  bin.mkpath
+  assay = bin / "assay"
+  assay.write(<<~'SH')
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for a in "$@"; do
+      if [[ "$a" == --no-such-flag ]]; then
+        echo "error: unexpected argument '--no-such-flag'" >&2
+        exit 2
+      fi
+    done
+    if [[ "${1:-}" != "sandbox" ]]; then
+      echo "error: unknown subcommand '${1:-}'" >&2
+      exit 2
+    fi
+    bundle=""; prev=""; saw_dd=0; cmd=""
+    for a in "$@"; do
+      if [[ "$prev" == "--bundle" ]]; then bundle="$a"; fi
+      if [[ "$a" == "--" ]]; then saw_dd=1; prev="$a"; continue; fi
+      if [[ "$saw_dd" -eq 1 && -z "$cmd" ]]; then cmd="$a"; fi
+      prev="$a"
+    done
+    [[ -n "$bundle" ]] || exit 2
+    [[ "$saw_dd" -eq 1 && -n "$cmd" ]] || exit 2
+    mkdir -p "$(dirname "$bundle")"
+    : >"$bundle"
+  SH
+  assay.chmod(0o755)
+  env = { "PATH" => "#{bin}:#{ENV.fetch("PATH")}" }
+  work = Pathname(dir) / "work"
+  work.mkpath
+  ok_run = system(env, "bash", "-c", recipe, chdir: work.to_s)
+  raise "independent exact recipe exec failed" unless ok_run
+  raise "independent exact recipe missing nested bundle" unless (work / ".assay/evidence/nested/sandbox.tar.gz").file?
+  bad_dir = Pathname(dir) / "bad"
+  bad_dir.mkpath
+  bad = system(env, "bash", "-c", "#{recipe} --no-such-flag", chdir: bad_dir.to_s, out: File::NULL, err: File::NULL)
+  raise "independent --no-such-flag stayed green" if bad
+end
 puts "PASS: exact remediation recipe executes"
+puts "PASS: independent docs-contract behavioral pin"
+
+# Must-bite: stubbing the focused helper must not stay green.
+stub_helper = exact.read
+begin
+  exact.write("#!/usr/bin/env bash\nexit 0\n")
+  helper_now = exact.read
+  begin
+    unless helper_now.include?('bash -c "$RECIPE"') && helper_now.include?("--no-such-flag") && helper_now.include?("GITHUB_ACTION_PATH")
+      raise ContractError, "exact remediation helper no longer pins action-selected behavioral execution"
+    end
+    raise "mutation stubs exact remediation helper: stayed green"
+  rescue ContractError => error
+    raise "mutation stubs exact remediation helper: wrong failure: #{error.message}" unless error.message.match?(/helper|behavioral|exact remediation/)
+    puts "PASS: mutation stubs exact remediation helper"
+  end
+ensure
+  exact.write(stub_helper)
+end
 
 puts "docs action contract passed"
