@@ -367,6 +367,10 @@ module ExecutableEvidenceRemediation
   STABLE_TAG = /\Av\d+[.]\d+[.]\d+\z/
   # "latest" as a standalone token. Deliberately does not match "ubuntu-latest".
   FLOATING_VERSION = /(?<![\w-])latest(?![\w-])/
+  # Fingerprints of a job-local release downloader. Matched on release-path
+  # shape, never on a bare hostname: this asks "does this shell fetch a release
+  # itself?", it is not URL-origin sanitization and must not be read as such.
+  SECOND_INSTALLER = %r{releases/download|tag_name|/repos/[^/\s"']+/[^/\s"']+/releases}
   USE_CASE_DOC = "docs/use-cases/mcp-tool-call-audit-trail-in-github-actions.md"
 
   RECIPE_FILE = "scripts/remediation_recipe.cmd"
@@ -564,9 +568,7 @@ module ExecutableEvidenceRemediation
     if install.nil?
       errors << "#{name}: missing pinned released-CLI install step through the action (uses: ./ with version)"
     end
-    if job_shell.include?("releases/download") ||
-       job_shell.include?("tag_name") ||
-       job_shell.include?("api.github.com")
+    if job_shell.match?(SECOND_INSTALLER)
       errors << "#{name}: journey carries a second installer; reuse the action's shared install path"
     end
     if job_shell.include?("cat >") && job_shell.include?("bin/assay")
