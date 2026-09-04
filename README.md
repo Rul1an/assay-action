@@ -56,55 +56,18 @@ capability boundary.
 
 ## From Scratch
 
-Start with a small policy file. The example uses MCP filesystem-style tool names;
-replace the tool names and path pattern with the tools and workspace your agent
-is expected to use.
-
-```yaml
-# policy.yaml
-version: "2.0"
-name: "agent-ci-starter"
-
-tools:
-  allow:
-    - "read_file"
-    - "list_dir"
-  deny:
-    - "exec"
-    - "shell"
-    - "write_file"
-
-schemas:
-  read_file:
-    type: object
-    additionalProperties: false
-    properties:
-      path:
-        type: string
-        # GitHub-hosted runners use /home/runner/work/<repo>/<repo>.
-        pattern: "^(/home/runner/work/|/tmp/).*"
-        minLength: 1
-    required: ["path"]
-
-  list_dir:
-    type: object
-    additionalProperties: false
-    properties:
-      path:
-        type: string
-        pattern: "^(/home/runner/work/|/tmp/).*"
-        minLength: 1
-    required: ["path"]
-```
-
-Then paste the workflow below. The action installs Assay, runs your test command
-under `assay sandbox`, verifies the generated bundle, and writes the GitHub
-review surfaces.
+Paste the workflow below for the default sandbox evidence path. With
+`sandbox-command` set, the action runs the command under `assay sandbox` using
+the CLI default profile (`mcp-server-minimal`), materializes the bundle at
+`.assay/sandbox-command/evidence.tar.gz`, verifies and lints it, and writes the
+GitHub review surfaces. No separate `policy.yaml` is required for this
+quickstart; custom policy authoring is a later step outside this default path.
 
 ## From Zero To Evidence In CI
 
-Use this when you want the whole path in one workflow: install Assay, run a test
-command under Assay, then review the produced evidence in GitHub.
+Use this when you want the whole path in one workflow: install Assay, run a
+command under `assay sandbox` on the default profile, then review the produced
+sandbox-command evidence in GitHub.
 
 ```yaml
 name: assay-evidence
@@ -128,8 +91,7 @@ jobs:
       - name: Capture and review evidence
         uses: Rul1an/assay-action@v3
         with:
-          sandbox-command: assay run --policy policy.yaml -- pytest tests/
-          bundles: ".assay/evidence/*.tar.gz"
+          sandbox-command: "true"
           baseline_key: ${{ github.event.repository.name }}
           write_baseline: ${{ github.ref == 'refs/heads/main' }}
           fail_on: error
@@ -395,17 +357,20 @@ actions before upgrading pinned workflow dependencies.
 
 ## How Evidence Bundles Fit
 
-This action reviews evidence bundles. The Assay CLI creates them.
+This action reviews evidence bundles. The Assay CLI creates them with the
+released sandbox producer:
 
 ```bash
-assay run --policy policy.yaml -- pytest tests/
+mkdir -p .assay/sandbox .assay/evidence/nested
+assay sandbox --dry-run \
+  --profile .assay/sandbox/profile.yaml \
+  --bundle .assay/evidence/nested/sandbox.tar.gz \
+  -- true
 ```
 
-That produces evidence bundles such as:
-
-```text
-.assay/evidence/run-20260506-123456.tar.gz
-```
+That writes a discoverable evidence bundle at `.assay/evidence/nested/sandbox.tar.gz`.
+The bundle attests the sandbox command's observed effects. It does not attest
+that a test suite passed.
 
 For the artifact-first receipt path, see
 [Evidence Receipts in Action](https://github.com/Rul1an/assay/blob/main/docs/notes/EVIDENCE-RECEIPTS-IN-ACTION.md),

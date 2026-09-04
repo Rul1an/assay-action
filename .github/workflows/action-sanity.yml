@@ -112,6 +112,120 @@ jobs:
           sarif: false
           comment_diff: false
 
+
+  # Issue #40: real released CLI produces discoverable sandbox evidence; Action
+  # auto-discovers it with bundles unset and evidence_mode required.
+  default-discovery-sandbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install released Assay CLI
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.assay/bin"
+          CURL_ARGS=(
+            --retry 3
+            --retry-delay 2
+            --retry-all-errors
+            -fsSL
+            -H "Accept: application/vnd.github+json"
+            -H "User-Agent: assay-action-installer"
+          )
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            CURL_ARGS+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+          fi
+          VERSION=$(
+            curl "${CURL_ARGS[@]}"               "https://api.github.com/repos/Rul1an/assay/releases/latest" |
+              sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+              head -n 1
+          )
+          test -n "$VERSION"
+          TARGET="x86_64-unknown-linux-gnu"
+          DOWNLOAD_URL="https://github.com/Rul1an/assay/releases/download/${VERSION}/assay-${VERSION}-${TARGET}.tar.gz"
+          CHECKSUM_URL="${DOWNLOAD_URL}.sha256"
+          TEMP_DIR=$(mktemp -d)
+          ARCHIVE_PATH="${TEMP_DIR}/assay.tar.gz"
+          CHECKSUM_PATH="${TEMP_DIR}/assay.tar.gz.sha256"
+          curl "${CURL_ARGS[@]}" "$DOWNLOAD_URL" -o "$ARCHIVE_PATH"
+          curl "${CURL_ARGS[@]}" "$CHECKSUM_URL" -o "$CHECKSUM_PATH"
+          EXPECTED_HASH=$(awk '{print $1}' "$CHECKSUM_PATH" | head -n 1 | tr -d '\r\n')
+          ACTUAL_HASH=$(sha256sum "$ARCHIVE_PATH" | awk '{print $1}')
+          test "$ACTUAL_HASH" = "$EXPECTED_HASH"
+          tar xzf "$ARCHIVE_PATH" -C "$TEMP_DIR"
+          BINARY=$(find "$TEMP_DIR" -type f -name "assay" | head -n 1)
+          test -n "$BINARY"
+          mv "$BINARY" "$HOME/.assay/bin/assay"
+          chmod +x "$HOME/.assay/bin/assay"
+          rm -rf "$TEMP_DIR"
+          echo "$HOME/.assay/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.assay/bin:$PATH"
+          assay --version
+
+      - name: Produce fresh sandbox evidence
+        id: produce
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.assay/bin:$PATH"
+          mkdir -p .assay/sandbox .assay/evidence/nested
+          assay sandbox --dry-run \
+            --profile .assay/sandbox/profile.yaml \
+            --bundle .assay/evidence/nested/sandbox.tar.gz \
+            -- true
+          test -f .assay/evidence/nested/sandbox.tar.gz
+          PRODUCED_SHA=$(sha256sum .assay/evidence/nested/sandbox.tar.gz | awk '{print $1}')
+          echo "bundle_sha=$PRODUCED_SHA" >> "$GITHUB_OUTPUT"
+          echo "Produced .assay/evidence/nested/sandbox.tar.gz sha256=$PRODUCED_SHA"
+
+      - name: Review auto-discovered sandbox evidence
+        id: review
+        uses: ./
+        with:
+          evidence_mode: required
+          fail_on: error
+          sarif: false
+          comment_diff: false
+
+      - name: Assert discovered sandbox evidence is verified
+        shell: bash
+        env:
+          EVIDENCE_STATE: ${{ steps.review.outputs.evidence_state }}
+          VERIFIED: ${{ steps.review.outputs.verified }}
+          INDEX_PATH: ${{ steps.review.outputs.evidence_index_path }}
+          INDEX_DIGEST: ${{ steps.review.outputs.evidence_index_digest }}
+          PRODUCED_SHA: ${{ steps.produce.outputs.bundle_sha }}
+        run: |
+          set -euo pipefail
+          test "$EVIDENCE_STATE" = "verified"
+          test "$VERIFIED" = "true"
+          test -n "$INDEX_DIGEST"
+          test -f "$INDEX_PATH"
+          python3 -c '
+          import hashlib, json, sys
+          path = sys.argv[1]
+          digest = sys.argv[2]
+          produced = sys.argv[3]
+          raw = open(path, "rb").read()
+          d = json.loads(raw)
+          assert d["complete"] is True
+          assert hashlib.sha256(raw).hexdigest() == digest
+          assert len(d["bundles"]) == 1
+          row = d["bundles"][0]
+          assert row["path"] == ".assay/evidence/nested/sandbox.tar.gz"
+          assert row["source"] == "discovered"
+          assert row["integrity"] == "verified"
+          assert row["sha256"] == produced
+          ' "$INDEX_PATH" "$INDEX_DIGEST" "$PRODUCED_SHA"
+
   required-zero-pr:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

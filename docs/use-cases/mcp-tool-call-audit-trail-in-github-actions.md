@@ -25,6 +25,7 @@ This page shows the workflow that produces that record, what the record looks li
 - The agent is safe.
 - The policy is complete.
 - The recorded list of tool calls is exhaustive of all possible behaviors — only of what was observed under the test run.
+- `assay sandbox` / `sandbox-command` captures an exhaustive MCP tool-call inventory beyond the observed filesystem, network, and process surface.
 
 ## One workflow
 
@@ -59,7 +60,7 @@ jobs:
           fail_on: error
 ```
 
-The action installs the released Assay CLI binary, runs your test command under `assay run` (which captures tool calls and other capability events), verifies the produced bundles, projects findings to SARIF, and uploads the named reports artifact before failing the PR if `fail_on` was triggered.
+The action installs the released Assay CLI binary, runs your test command under `assay sandbox` (Landlock observe-and-record), verifies the produced bundles, projects findings to SARIF, and uploads the named reports artifact before failing the PR if `fail_on` was triggered. The sandbox records observed filesystem, network, and process effects under the active profile; it does not claim an exhaustive MCP tool-call inventory beyond that observed surface.
 
 ## Canonical artifact
 
@@ -85,7 +86,7 @@ A bundle is `.tar.gz` containing `manifest.json` and `events.ndjson`. Tool-call 
 }
 ```
 
-The five capability event types you will see:
+Capability event types that may appear in evidence bundles. A `sandbox-command` run observes filesystem, network, and process effects under the active profile; MCP `assay.tool.decision` rows appear only when a producer emits them — not as a claimed exhaustive tool-call capture by this action alone:
 
 | Event type | Subject means |
 |---|---|
