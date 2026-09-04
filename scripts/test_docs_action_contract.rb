@@ -359,6 +359,14 @@ module ExecutableEvidenceRemediation
   # journey discriminates real discovery from a hardcoded flat default path.
   DISCOVERY_BUNDLE = ".assay/evidence/nested/sandbox.tar.gz"
   LEGACY_FLAT_BUNDLE = ".assay/evidence/sandbox.tar.gz"
+  # Issue #43: one source-of-truth stable pin for the required hosted proof.
+  # The journey installs exactly this tag through the action's own shared
+  # install path (resolve-version.sh), so the required gate is deterministic.
+  PINNED_VERSION_ENV = "ASSAY_PINNED_VERSION"
+  PINNED_VERSION_REF = "${{ env.ASSAY_PINNED_VERSION }}"
+  STABLE_TAG = /\Av\d+[.]\d+[.]\d+\z/
+  # "latest" as a standalone token. Deliberately does not match "ubuntu-latest".
+  FLOATING_VERSION = /(?<![\w-])latest(?![\w-])/
   USE_CASE_DOC = "docs/use-cases/mcp-tool-call-audit-trail-in-github-actions.md"
 
   RECIPE_FILE = "scripts/remediation_recipe.cmd"
@@ -466,6 +474,15 @@ module ExecutableEvidenceRemediation
   end
 
 
+  # The proof step is the ./ invocation that demands discovery. Fall back to the
+  # last ./ step so a mutation that drops evidence_mode still reports the real
+  # defect instead of silently selecting the install invocation.
+  def required_consumer(steps)
+    steps.find do |step|
+      step["uses"].to_s == "./" && step.dig("with", "evidence_mode").to_s == "required"
+    end || steps.reverse.find { |step| step["uses"].to_s == "./" }
+  end
+
   def journey_job(workflow_text)
     parsed = YAML.safe_load(workflow_text, aliases: true)
     jobs = parsed.fetch("jobs")
@@ -476,7 +493,7 @@ module ExecutableEvidenceRemediation
       steps = job.fetch("steps")
       producer = steps.find { |step| step["id"].to_s == "produce" || step["run"].to_s.include?("sandbox.tar.gz") && step["name"].to_s.downcase.include?("produce") }
       producer ||= steps.find { |step| step["run"].to_s.include?("sandbox.tar.gz") && !step["run"].to_s.include?("EVIDENCE_STATE") && step["uses"].nil? }
-      consumer = steps.find { |step| step["uses"].to_s == "./" }
+      consumer = required_consumer(steps)
       return ["default-discovery-sandbox", job, producer, consumer]
     end
     jobs.each do |name, job|
@@ -487,9 +504,7 @@ module ExecutableEvidenceRemediation
         run = step["run"].to_s
         run.include?("assay sandbox --dry-run") && run.include?(DISCOVERY_BUNDLE)
       end
-      consumer = steps.find do |step|
-        step["uses"].to_s == "./" && (step.dig("with", "evidence_mode").to_s == "required")
-      end
+      consumer = required_consumer(steps)
       return [name, job, producer, consumer] if producer && consumer
     end
     nil
@@ -539,22 +554,26 @@ module ExecutableEvidenceRemediation
       errors << "#{name}: consumer must leave bundles unset for default auto-discovery"
     end
 
+    # Issue #43: the released CLI must arrive through the action's own shared
+    # install path (resolve-version.sh + verify-install.sh, owned by #42). A
+    # job-local downloader is a second installer and is rejected outright.
     install = steps.find do |step|
-      run = step["run"].to_s
-      name_l = step["name"].to_s.downcase
-      (name_l.include?("install") && name_l.include?("assay")) ||
-        (run.include?("releases/download") && run.include?("Rul1an/assay"))
+      step["uses"].to_s == "./" && step.dig("with", "version").to_s != ""
     end
+    job_shell = steps.map { |step| step["run"].to_s }.join("\n")
     if install.nil?
-      errors << "#{name}: missing real released CLI install step"
-    else
-      install_run = install["run"].to_s
-      if install_run.include?("cat >") && install_run.include?("bin/assay")
-        errors << "#{name}: install must use released CLI, not a stub binary"
-      end
-      unless install_run.include?("releases/download") || install_run.include?("resolve-version")
-        errors << "#{name}: install must follow the release download path"
-      end
+      errors << "#{name}: missing pinned released-CLI install step through the action (uses: ./ with version)"
+    end
+    if job_shell.include?("releases/download") ||
+       job_shell.include?("tag_name") ||
+       job_shell.include?("api.github.com")
+      errors << "#{name}: journey carries a second installer; reuse the action's shared install path"
+    end
+    if job_shell.include?("cat >") && job_shell.include?("bin/assay")
+      errors << "#{name}: install must use the released CLI, not a stub binary"
+    end
+    if job_shell.match?(%r{\brm\b[^\n]*\.assay/evidence})
+      errors << "#{name}: journey must not delete the produced bundle before the proof step"
     end
 
     assert_step = steps.find do |step|
@@ -574,6 +593,53 @@ module ExecutableEvidenceRemediation
       unless run.include?("sha256") && (run.include?("PRODUCED") || run.include?("produced") || run.include?("BUNDLE_SHA"))
         errors << "#{name}: assert must bind index row sha256 to newly produced bundle"
       end
+    end
+
+    raise ContractError, errors.join("\n") unless errors.empty?
+  end
+
+  # Issue #43: the required proof must install one pinned stable tag, declared
+  # once, and must never resolve a floating "latest". Declaring the pin is not
+  # enough: the journey also asserts at runtime that the installed CLI is that
+  # tag, so an ignored pin cannot stay green.
+  def validate_pin!(workflow_text)
+    errors = []
+    parsed = YAML.safe_load(workflow_text, aliases: true)
+    pin = parsed.fetch("env", {}).fetch(PINNED_VERSION_ENV, "").to_s
+    if pin.empty?
+      errors << "workflow must declare one #{PINNED_VERSION_ENV} pin for the required proof"
+    elsif !pin.match?(STABLE_TAG)
+      errors << "#{PINNED_VERSION_ENV} must be one stable vX.Y.Z tag, got #{pin.inspect}"
+    end
+
+    found = journey_job(workflow_text)
+    raise ContractError, (errors << "action-sanity missing journey job").join("\n") unless found
+
+    name, job, = found
+    steps = job.fetch("steps")
+    action_steps = steps.select { |step| step["uses"].to_s == "./" }
+    if action_steps.empty?
+      errors << "#{name}: journey must invoke the production action"
+    end
+    action_steps.each do |step|
+      version = step.dig("with", "version").to_s
+      next if version == PINNED_VERSION_REF
+
+      errors << "#{name}: every ./ step must install the single pinned version " \
+                "via #{PINNED_VERSION_REF}, got #{version.inspect}"
+    end
+
+    if YAML.dump(job).match?(FLOATING_VERSION)
+      errors << "#{name}: journey must not resolve a floating latest; it installs #{PINNED_VERSION_ENV}"
+    end
+
+    version_assert = steps.any? do |step|
+      run = step["run"].to_s
+      run.include?("assay --version") && run.include?("PINNED")
+    end
+    unless version_assert
+      errors << "#{name}: journey must assert the installed CLI matches the pin, " \
+                "otherwise an ignored pin stays green"
     end
 
     raise ContractError, errors.join("\n") unless errors.empty?
@@ -638,6 +704,7 @@ module ExecutableEvidenceRemediation
     recipe = ExecutableEvidenceRemediation.canonical_recipe(repo_root)
     validate_remediation!(readme, action, recipe)
     validate_journey!(workflow)
+    validate_pin!(workflow)
     validate_use_case_public_truth!(use_case)
     validate_quickstart_coherence!(readme)
   end
@@ -810,6 +877,95 @@ if workflow.include?(ExecutableEvidenceRemediation::DISCOVERY_BUNDLE)
     /assert|bind discovered path|discovery|bundle/
   )
 end
+
+# Issue #43 must-bite mutations: the required proof must stay pinned, install
+# through the shared path, keep its bundle, and honour the pin it declares.
+mut_wf_pin_latest = workflow.sub(
+  /^  ASSAY_PINNED_VERSION: v\d+[.]\d+[.]\d+$/,
+  "  ASSAY_PINNED_VERSION: latest"
+)
+raise "workflow pin is not mutable" if mut_wf_pin_latest == workflow
+expect_remediation_invalid(
+  "mutation replaces the stable pin with latest",
+  readme,
+  action,
+  mut_wf_pin_latest,
+  use_case,
+  /stable vX[.]Y[.]Z|ASSAY_PINNED_VERSION/
+)
+
+mut_wf_step_latest = workflow.sub(
+  "version: #{ExecutableEvidenceRemediation::PINNED_VERSION_REF}",
+  "version: latest"
+)
+raise "journey version reference is not mutable" if mut_wf_step_latest == workflow
+expect_remediation_invalid(
+  "mutation resolves latest at a journey step instead of the pin",
+  readme,
+  action,
+  mut_wf_step_latest,
+  use_case,
+  /single pinned version|floating latest/
+)
+
+mut_wf_second_installer = workflow.sub(
+  "      - name: Produce fresh sandbox evidence\n",
+  "      - name: Install released Assay CLI\n" \
+  "        shell: bash\n" \
+  "        run: |\n" \
+  "          set -euo pipefail\n" \
+  "          curl -fsSL \"https://github.com/Rul1an/assay/releases/download/v1.0.0/a.tar.gz\" -o a.tar.gz\n" \
+  "\n" \
+  "      - name: Produce fresh sandbox evidence\n"
+)
+raise "journey step list is not mutable" if mut_wf_second_installer == workflow
+expect_remediation_invalid(
+  "mutation reintroduces a job-local installer",
+  readme,
+  action,
+  mut_wf_second_installer,
+  use_case,
+  /second installer|shared install path/
+)
+
+mut_wf_ignored_pin = workflow.sub(
+  'INSTALLED="$(assay --version)"',
+  'INSTALLED="assay pinned"'
+)
+raise "installed-version probe is not mutable" if mut_wf_ignored_pin == workflow
+expect_remediation_invalid(
+  "mutation stops asserting the installed CLI matches the pin",
+  readme,
+  action,
+  mut_wf_ignored_pin,
+  use_case,
+  /installed CLI matches the pin|ignored pin/
+)
+
+mut_wf_drop_bundle = workflow.sub(
+  '          echo "Produced .assay/evidence/nested/sandbox.tar.gz sha256=$PRODUCED_SHA"',
+  "          rm -f .assay/evidence/nested/sandbox.tar.gz"
+)
+raise "producer tail is not mutable" if mut_wf_drop_bundle == workflow
+expect_remediation_invalid(
+  "mutation deletes the produced bundle before the proof step",
+  readme,
+  action,
+  mut_wf_drop_bundle,
+  use_case,
+  /delete the produced bundle/
+)
+
+# Control: a comment-only workflow edit changes no rule and must stay green.
+noop_workflow = workflow.sub(
+  "name: Action Sanity\n",
+  "name: Action Sanity\n# no-op control comment: contracts must not key off comments\n"
+)
+raise "no-op control did not change the workflow text" if noop_workflow == workflow
+ExecutableEvidenceRemediation.validate_public_contract!(
+  readme, action, noop_workflow, use_case, repo_root: repo
+)
+puts "PASS: control: comment-only workflow edit keeps the journey contract green"
 
 mut_use_case_run = use_case.sub(
   "`assay sandbox`",

@@ -116,6 +116,40 @@ Scope:
 - Public docs, README, examples, workflow files, scripts, and `action.yml`.
 - Generated public artifacts if a later workflow creates them.
 
+### Pinned Default-Discovery Proof
+
+Add one required Linux job, `default-discovery-sandbox`, that executes the
+install-to-discovery journey instead of only pinning its shape:
+
+- It installs one pinned stable Assay tag, declared once as the workflow-level
+  `ASSAY_PINNED_VERSION`, through the action's own install path. This job must
+  not carry a second installer; issue #42 owns `latest` resolution and
+  installer/version truth.
+- It asserts that the CLI actually installed is that pinned tag. Declaring a
+  pin is not honouring one.
+- It produces a fresh bundle at a non-default nested path under
+  `.assay/evidence/`, so a hardcoded flat default path cannot satisfy it.
+- It invokes the production action with `evidence_mode: required` and no
+  `bundles` input, exercising default auto-discovery.
+- It asserts exactly one discovered row whose path and sha256 match the bundle
+  just produced, with `evidence_state=verified` and `verified=true`.
+- It is unconditional. A job skipped on pull requests reports no context and
+  cannot gate a merge.
+
+The structural half of these rules is enforced by
+`scripts/test_docs_action_contract.rb`; agreement between this document, the
+recorded ruleset inventory, and the workflow jobs is enforced by
+`scripts/test_required_contexts_contract.rb`. Hosted Actions is the execution
+proof: the rules above describe what that job must run, not a substitute for
+running it.
+
+Non-claims for this job: it proves one pinned Linux install-to-discovery
+journey. It does not prove release availability, `latest` resolution, macOS
+behavior, floating-tag safety, marketplace behavior, or every sandbox policy.
+
+Floating `@v3`/`@v2` tags, macOS lanes, scheduled canaries, and release
+discovery stay advisory canary work and must not become required contexts.
+
 ### Fork Pull Request Contract
 
 Add a required fork-like reduced-permission contract test.
@@ -278,6 +312,7 @@ the operator-managed protection, not an imported or active GitHub ruleset.
 - `baseline-delta-pr`
 - `Public Artifact Sanitization`
 - `required-zero-pr`
+- `default-discovery-sandbox`
 
 `.github/workflows/action-sanity.yml` stays always triggered on pull requests so
 these required contexts cannot disappear on docs-only or unrelated PRs.

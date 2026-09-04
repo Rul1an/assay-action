@@ -11,6 +11,13 @@ on:
 
 permissions: {}
 
+env:
+  # Issue #43: one source-of-truth stable Assay pin for the required
+  # default-discovery proof. Deterministic on purpose: a floating "latest"
+  # would let an upstream release change what the merge gate measured.
+  # Bumping this tag is a deliberate, reviewable change.
+  ASSAY_PINNED_VERSION: v6.0.0
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -44,6 +51,9 @@ jobs:
 
       - name: Verify executable docs match selected action contracts
         run: ruby scripts/test_docs_action_contract.rb
+
+      - name: Verify required-context set agrees across contract and inventory
+        run: ruby scripts/test_required_contexts_contract.rb
 
   capability-diff-sim:
     runs-on: ubuntu-latest
@@ -115,6 +125,10 @@ jobs:
 
   # Issue #40: real released CLI produces discoverable sandbox evidence; Action
   # auto-discovers it with bundles unset and evidence_mode required.
+  # Issue #43: this is a required context. It installs one pinned stable CLI
+  # through the action's own shared install path (issue #42 owns that path and
+  # all `latest` resolution), so the gate cannot silently measure a different
+  # release. Unconditional on purpose: a skipped job reports no context.
   default-discovery-sandbox:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -125,57 +139,34 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install released Assay CLI
+      - name: Install the pinned Assay CLI through the action
+        id: install
+        uses: ./
+        with:
+          version: ${{ env.ASSAY_PINNED_VERSION }}
+          bundles: ".assay/evidence/*.tar.gz"
+          evidence_mode: optional
+          fail_on: error
+          sarif: false
+          comment_diff: false
+
+      - name: Assert the installed CLI is the pinned version
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          PINNED_VERSION: ${{ env.ASSAY_PINNED_VERSION }}
         run: |
           set -euo pipefail
-          mkdir -p "$HOME/.assay/bin"
-          CURL_ARGS=(
-            --retry 3
-            --retry-delay 2
-            --retry-all-errors
-            -fsSL
-            -H "Accept: application/vnd.github+json"
-            -H "User-Agent: assay-action-installer"
-          )
-          if [ -n "${GITHUB_TOKEN:-}" ]; then
-            CURL_ARGS+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
-          fi
-          VERSION=$(
-            curl "${CURL_ARGS[@]}"               "https://api.github.com/repos/Rul1an/assay/releases/latest" |
-              sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
-              head -n 1
-          )
-          test -n "$VERSION"
-          TARGET="x86_64-unknown-linux-gnu"
-          DOWNLOAD_URL="https://github.com/Rul1an/assay/releases/download/${VERSION}/assay-${VERSION}-${TARGET}.tar.gz"
-          CHECKSUM_URL="${DOWNLOAD_URL}.sha256"
-          TEMP_DIR=$(mktemp -d)
-          ARCHIVE_PATH="${TEMP_DIR}/assay.tar.gz"
-          CHECKSUM_PATH="${TEMP_DIR}/assay.tar.gz.sha256"
-          curl "${CURL_ARGS[@]}" "$DOWNLOAD_URL" -o "$ARCHIVE_PATH"
-          curl "${CURL_ARGS[@]}" "$CHECKSUM_URL" -o "$CHECKSUM_PATH"
-          EXPECTED_HASH=$(awk '{print $1}' "$CHECKSUM_PATH" | head -n 1 | tr -d '\r\n')
-          ACTUAL_HASH=$(sha256sum "$ARCHIVE_PATH" | awk '{print $1}')
-          test "$ACTUAL_HASH" = "$EXPECTED_HASH"
-          tar xzf "$ARCHIVE_PATH" -C "$TEMP_DIR"
-          BINARY=$(find "$TEMP_DIR" -type f -name "assay" | head -n 1)
-          test -n "$BINARY"
-          mv "$BINARY" "$HOME/.assay/bin/assay"
-          chmod +x "$HOME/.assay/bin/assay"
-          rm -rf "$TEMP_DIR"
-          echo "$HOME/.assay/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.assay/bin:$PATH"
-          assay --version
+          INSTALLED="$(assay --version)"
+          # Declaring a pin is not honouring one. Without this the action could
+          # install any release and the required gate would stay green.
+          test "$INSTALLED" = "assay ${PINNED_VERSION#v}"
+          echo "Installed $INSTALLED from pin $PINNED_VERSION"
 
       - name: Produce fresh sandbox evidence
         id: produce
         shell: bash
         run: |
           set -euo pipefail
-          export PATH="$HOME/.assay/bin:$PATH"
           mkdir -p .assay/sandbox .assay/evidence/nested
           assay sandbox --dry-run \
             --profile .assay/sandbox/profile.yaml \
@@ -190,6 +181,7 @@ jobs:
         id: review
         uses: ./
         with:
+          version: ${{ env.ASSAY_PINNED_VERSION }}
           evidence_mode: required
           fail_on: error
           sarif: false
