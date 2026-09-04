@@ -41,6 +41,10 @@
           {
             "context": "required-zero-pr",
             "integration_id": 15368
+          },
+          {
+            "context": "default-discovery-sandbox",
+            "integration_id": 15368
           }
         ]
       }
