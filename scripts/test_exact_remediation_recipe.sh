@@ -9,27 +9,14 @@ CANONICAL_REL="scripts/remediation_recipe.cmd"
 die() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "PASS: $*"; }
 
-# Resolve the recipe path(s) actually cat'd by action.yml (production emission).
-mapfile -t LOADED < <(
-  grep -oE '\$GITHUB_ACTION_PATH/(scripts/[^"[:space:]]+)' "$ACTION" \
-    | sed 's|^\$GITHUB_ACTION_PATH/||' \
-    | sort -u
-) || true
-# Prefer lines that load remediation recipe specifically
+# Resolve recipe path(s) from real shell-command lines only (comments are not loads).
+ACTION_CODE=$(grep -vE '^[[:space:]]*#' "$ACTION" || true)
 mapfile -t RECIPE_LOADS < <(
-  grep -E 'cat "\$GITHUB_ACTION_PATH/scripts/[^"]+"' "$ACTION" \
-    | grep -E 'remediation|recipe' \
+  printf '%s\n' "$ACTION_CODE" \
+    | grep -E 'cat "\$GITHUB_ACTION_PATH/scripts/[^"]+"' \
     | sed -n 's/.*cat "\$GITHUB_ACTION_PATH\/\([^"]*\)".*/\1/p' \
     | sort -u
 ) || true
-if [[ "${#RECIPE_LOADS[@]}" -eq 0 ]]; then
-  # fallback: any cat under scripts/*.cmd from action
-  mapfile -t RECIPE_LOADS < <(
-    grep -oE 'cat "\$GITHUB_ACTION_PATH/scripts/[^"]+\.cmd"' "$ACTION" \
-      | sed -n 's/.*\$GITHUB_ACTION_PATH\/\(.*\)"/\1/p' \
-      | sort -u
-  ) || true
-fi
 [[ "${#RECIPE_LOADS[@]}" -ge 1 ]] || die "action.yml does not cat a scripts/*.cmd recipe path"
 [[ "${#RECIPE_LOADS[@]}" -eq 1 ]] || die "action.yml loads multiple recipe paths: ${RECIPE_LOADS[*]}"
 LOADED_REL="${RECIPE_LOADS[0]}"
@@ -123,5 +110,37 @@ grep -E "cat \"\\\$GITHUB_ACTION_PATH/${LOADED_REL//\//\\/}\"" "$mut_action" >/d
 [[ "$(cat "$RECIPE_FILE")" == "$RECIPE" ]] || die "noop path mutated recipe bytes"
 ( cd "$(mktemp -d "$TMP/work.XXXXXX")" && PATH="$TMP/bin:$PATH" bash -c "$RECIPE" )
 pass "noop/comment control keeps action-selected recipe bytes and exec green"
+
+# Must-bite: decoy comment must not select canonical when real cats load alt.cmd
+DECOY_DIR=$(mktemp -d "$TMP/decoy.XXXXXX")
+cp "$ACTION" "$DECOY_DIR/action.yml"
+printf '%s' "$RECIPE --no-such-flag" >"$DECOY_DIR/alt.cmd"
+python3 - "$DECOY_DIR/action.yml" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+t = p.read_text()
+old = 'RECIPE="$(cat "$GITHUB_ACTION_PATH/scripts/remediation_recipe.cmd")"'
+new = 'RECIPE="$(cat "$GITHUB_ACTION_PATH/scripts/alt.cmd")"'
+if old not in t:
+    raise SystemExit("expected canonical cat loads for decoy mutation")
+t = t.replace(old, new)
+t = t.replace(
+    new,
+    '# decoy cat "$GITHUB_ACTION_PATH/scripts/remediation_recipe.cmd"\n          ' + new,
+    1,
+)
+p.write_text(t)
+PY
+DECOY_CODE=$(grep -vE '^[[:space:]]*#' "$DECOY_DIR/action.yml" || true)
+mapfile -t DECOY_LOADS < <(
+  printf '%s\n' "$DECOY_CODE" \
+    | grep -E 'cat "\$GITHUB_ACTION_PATH/scripts/[^"]+"' \
+    | sed -n 's/.*cat "\$GITHUB_ACTION_PATH\/\([^"]*\)".*/\1/p' \
+    | sort -u
+) || true
+[[ "${#DECOY_LOADS[@]}" -eq 1 && "${DECOY_LOADS[0]}" == "scripts/alt.cmd" ]] \
+  || die "decoy comment still selected recipe path(s): ${DECOY_LOADS[*]:-none}"
+pass "decoy comment cannot override real cat path"
 
 echo "exact remediation recipe contract passed"
