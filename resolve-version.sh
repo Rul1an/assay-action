@@ -26,18 +26,21 @@ if [[ "$VERSION" == "latest" ]]; then
     --retry-delay 2
     --retry-all-errors
     -fsSL
-    -H "Accept: application/vnd.github+json"
+    --max-redirs 3
+    --proto '=https'
+    --proto-redir '=https'
+    -o /dev/null
+    -w '%{url_effective}'
     -H "User-Agent: assay-action-installer"
   )
-  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    CURL_ARGS+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
-  fi
-  VERSION=$(
+  EFFECTIVE_URL="$(
     curl "${CURL_ARGS[@]}" \
-      "https://api.github.com/repos/$REPO/releases/latest" |
-      sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
-      head -n 1
-  )
+      "https://github.com/$REPO/releases/latest" || true
+  )"
+  VERSION=""
+  if [[ "$EFFECTIVE_URL" =~ ^https://github\.com/Rul1an/assay/releases/tag/([^/?#]+)$ ]]; then
+    VERSION="${BASH_REMATCH[1]}"
+  fi
   if [[ -z "$VERSION" ]]; then
     echo "::error::Failed to fetch latest Assay version"
     exit 1
