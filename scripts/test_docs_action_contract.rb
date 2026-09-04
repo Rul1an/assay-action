@@ -347,4 +347,331 @@ Dir.mktmpdir("docs-contract-") do |root|
   validate_root!(root, repo)
 end
 puts "PASS: prose/comment-only history stays outside executable examples"
+
+# ---------------------------------------------------------------------------
+# Issue #40: one released-CLI remediation recipe + default-discovery journey
+# Shared helper is used by acceptance AND mutations (producer vs consumer).
+# ---------------------------------------------------------------------------
+
+module ExecutableEvidenceRemediation
+  RECIPE = <<~'SH'.chomp.freeze
+    mkdir -p .assay/sandbox .assay/evidence
+    assay sandbox --dry-run \
+      --profile .assay/sandbox/profile.yaml \
+      --bundle .assay/evidence/sandbox.tar.gz \
+      -- true
+  SH
+
+  REQUIRED_TOKENS = [
+    "mkdir -p .assay/sandbox .assay/evidence",
+    "assay sandbox --dry-run",
+    "--profile .assay/sandbox/profile.yaml",
+    "--bundle .assay/evidence/sandbox.tar.gz",
+    "-- true"
+  ].freeze
+
+  FORBIDDEN_REMEDIATION = /Run 'assay run'|assay run --policy/
+
+  DISCOVERY_BUNDLE = ".assay/evidence/sandbox.tar.gz"
+
+  module_function
+
+  def recipe_tokens_in_order?(text)
+    pos = 0
+    REQUIRED_TOKENS.all? do |token|
+      idx = text.index(token, pos)
+      next false unless idx
+
+      pos = idx + token.length
+      true
+    end
+  end
+
+  def remediation_surfaces(readme, action)
+    notice = ""
+    action.each_line do |line|
+      if line.include?("::notice::") && line.include?("No evidence bundles found")
+        notice = line
+        break
+      end
+    end
+
+    summary = ""
+    if (match = action.match(/No Evidence Bundles Found.*?Bundles are written under.*?\n/m))
+      summary = match[0]
+    end
+
+    readme_section = ""
+    if (match = readme.match(/## How Evidence Bundles Fit\n.*?(?=\n## )/m))
+      readme_section = match[0]
+    end
+
+    {
+      "notice" => notice,
+      "summary" => summary,
+      "readme" => readme_section
+    }
+  end
+
+  def validate_remediation!(readme, action)
+    errors = []
+    remediation_surfaces(readme, action).each do |name, text|
+      errors << "#{name}: missing released remediation recipe tokens" unless recipe_tokens_in_order?(text)
+      errors << "#{name}: forbidden non-executable assay run remediation" if text.match?(FORBIDDEN_REMEDIATION)
+    end
+    errors << "README must embed the exact released remediation recipe" unless readme.include?(RECIPE)
+    # action.yml summary echoes the recipe line-by-line (YAML block indentation);
+    # token order on the summary surface is the pin for the Action.
+    # Primary README capture example must not teach the non-executable assay run recipe.
+    if readme.match?(/sandbox-command:\s*assay run/)
+      errors << "README sandbox-command still teaches non-executable assay run remediation"
+    end
+    if readme.match?(FORBIDDEN_REMEDIATION) || action.match?(FORBIDDEN_REMEDIATION)
+      errors << "public surfaces still contain non-executable assay run remediation"
+    end
+    raise ContractError, errors.join("\n") unless errors.empty?
+  end
+
+  def journey_job(workflow_text)
+    parsed = YAML.safe_load(workflow_text, aliases: true)
+    jobs = parsed.fetch("jobs")
+    # Prefer the dedicated job name; fall back to structural match so mutations
+    # against producer/consumer still exercise the shared helper.
+    if jobs.key?("default-discovery-sandbox")
+      job = jobs.fetch("default-discovery-sandbox")
+      steps = job.fetch("steps")
+      producer = steps.find { |step| step["id"].to_s == "produce" || step["run"].to_s.include?("sandbox.tar.gz") && step["name"].to_s.downcase.include?("produce") }
+      producer ||= steps.find { |step| step["run"].to_s.include?("sandbox.tar.gz") && !step["run"].to_s.include?("EVIDENCE_STATE") && step["uses"].nil? }
+      consumer = steps.find { |step| step["uses"].to_s == "./" }
+      return ["default-discovery-sandbox", job, producer, consumer]
+    end
+    jobs.each do |name, job|
+      steps = job["steps"]
+      next unless steps.is_a?(Array)
+
+      producer = steps.find do |step|
+        run = step["run"].to_s
+        run.include?("assay sandbox --dry-run") && run.include?(DISCOVERY_BUNDLE)
+      end
+      consumer = steps.find do |step|
+        step["uses"].to_s == "./" && (step.dig("with", "evidence_mode").to_s == "required")
+      end
+      return [name, job, producer, consumer] if producer && consumer
+    end
+    nil
+  end
+
+  def validate_journey!(workflow_text)
+    errors = []
+    found = journey_job(workflow_text)
+    unless found
+      raise ContractError, "action-sanity missing producer+required-consumer journey job"
+    end
+    name, job, producer, consumer = found
+    steps = job.fetch("steps")
+
+    unless job["runs-on"].to_s.include?("ubuntu")
+      errors << "#{name}: journey must be Linux/ubuntu"
+    end
+
+    if producer.nil?
+      errors << "#{name}: producer step missing (deleted or skipped)"
+    else
+      producer_run = producer["run"].to_s
+      unless recipe_tokens_in_order?(producer_run)
+        errors << "#{name}: producer must run the released remediation recipe"
+      end
+      if producer_run.match?(/\bcp\b/) || producer_run.include?("fixture")
+        errors << "#{name}: producer must create a fresh bundle, not copy a fixture"
+      end
+      unless producer_run.include?("--bundle #{DISCOVERY_BUNDLE}")
+        errors << "#{name}: producer bundle path must be #{DISCOVERY_BUNDLE}"
+      end
+      if producer_run.match?(%r{--bundle\s+(/tmp/|\.\./|evidence-out/)})
+        errors << "#{name}: producer bundle path is outside discovery roots"
+      end
+    end
+
+    if consumer.nil?
+      errors << "#{name}: consumer action step missing"
+      with = {}
+    else
+      with = consumer.fetch("with", {})
+    end
+    unless with.is_a?(Hash) && with["evidence_mode"].to_s == "required"
+      errors << "#{name}: consumer must set evidence_mode: required"
+    end
+    if with.is_a?(Hash) && with.key?("bundles")
+      errors << "#{name}: consumer must leave bundles unset for default auto-discovery"
+    end
+
+    install = steps.find do |step|
+      run = step["run"].to_s
+      name_l = step["name"].to_s.downcase
+      (name_l.include?("install") && name_l.include?("assay")) ||
+        (run.include?("releases/download") && run.include?("Rul1an/assay"))
+    end
+    if install.nil?
+      errors << "#{name}: missing real released CLI install step"
+    else
+      install_run = install["run"].to_s
+      if install_run.include?("cat >") && install_run.include?("bin/assay")
+        errors << "#{name}: install must use released CLI, not a stub binary"
+      end
+      unless install_run.include?("releases/download") || install_run.include?("resolve-version")
+        errors << "#{name}: install must follow the release download path"
+      end
+    end
+
+    assert_step = steps.find do |step|
+      run = step["run"].to_s
+      run.include?("EVIDENCE_STATE") && run.include?("sandbox.tar.gz") && run.include?("INDEX_DIGEST")
+    end
+    if assert_step.nil?
+      errors << "#{name}: missing assert step for discovered sandbox evidence"
+    else
+      run = assert_step.fetch("run")
+      errors << "#{name}: assert must require evidence_state=verified" unless run.include?('EVIDENCE_STATE') && run.match?(/verified/)
+      errors << "#{name}: assert must require non-empty evidence-index digest" unless run.include?("INDEX_DIGEST")
+      errors << "#{name}: assert must bind discovered path #{DISCOVERY_BUNDLE}" unless run.include?(DISCOVERY_BUNDLE)
+      unless run.match?(/integrity.+verified|["']verified["']/) && run.include?("integrity")
+        errors << "#{name}: assert must require per-bundle integrity verified (not manufactured)"
+      end
+      unless run.include?("sha256") && (run.include?("PRODUCED") || run.include?("produced") || run.include?("BUNDLE_SHA"))
+        errors << "#{name}: assert must bind index row sha256 to newly produced bundle"
+      end
+    end
+
+    raise ContractError, errors.join("\n") unless errors.empty?
+  end
+
+  def validate_public_contract!(readme, action, workflow)
+    validate_remediation!(readme, action)
+    validate_journey!(workflow)
+  end
+end
+
+def expect_remediation_invalid(label, readme, action, workflow, expected)
+  begin
+    ExecutableEvidenceRemediation.validate_public_contract!(readme, action, workflow)
+  rescue ContractError => error
+    raise "#{label}: wrong failure: #{error.message}" unless error.message.match?(expected)
+
+    puts "PASS: #{label}"
+    return
+  end
+  raise "#{label}: mutation stayed green"
+end
+
+workflow = (repo / ".github/workflows/action-sanity.yml").read
+ExecutableEvidenceRemediation.validate_public_contract!(readme, action, workflow)
+puts "PASS: released remediation recipe pinned across public surfaces"
+puts "PASS: default-discovery sandbox journey pinned"
+
+# Must-bite mutations (shared helper — not self-satisfying)
+mut_notice = action.sub(
+  /::notice::No evidence bundles found\.[^\n]*/,
+  "::notice::No evidence bundles found. Run 'assay run' to generate them."
+)
+expect_remediation_invalid(
+  "mutation restores Run 'assay run' notice",
+  readme,
+  mut_notice,
+  workflow,
+  /forbidden|assay run|missing released/
+)
+
+mut_summary = action.sub(
+  "echo 'assay sandbox --dry-run \\'",
+  "echo 'assay run --policy policy.yaml -- pytest'"
+)
+expect_remediation_invalid(
+  "mutation restores assay run summary recipe",
+  readme,
+  mut_summary,
+  workflow,
+  /forbidden|missing released/
+)
+
+mut_readme_recipe = readme.sub(ExecutableEvidenceRemediation::RECIPE, "assay run --policy policy.yaml -- pytest tests/")
+expect_remediation_invalid(
+  "mutation restores assay run README remediation",
+  mut_readme_recipe,
+  action,
+  workflow,
+  /forbidden|missing released|exact released/
+)
+
+mut_wf_skip = workflow.sub(
+  /assay sandbox --dry-run \\\n(?:.*\n)*?\s*-- true\n/,
+  "echo skip producer\n"
+)
+expect_remediation_invalid(
+  "mutation deletes producer sandbox step",
+  readme,
+  action,
+  mut_wf_skip,
+  /producer|journey/
+)
+
+mut_wf_fixture = workflow.sub(
+  /assay sandbox --dry-run \\\n(?:.*\n)*?\s*-- true\n/,
+  "cp fixtures/sandbox.tar.gz .assay/evidence/sandbox.tar.gz\n"
+)
+expect_remediation_invalid(
+  "mutation copies fixture instead of producing",
+  readme,
+  action,
+  mut_wf_fixture,
+  /fixture|fresh|producer/
+)
+
+mut_wf_outside = workflow.sub(
+  "--bundle .assay/evidence/sandbox.tar.gz",
+  "--bundle /tmp/outside-sandbox.tar.gz"
+)
+expect_remediation_invalid(
+  "mutation sets output path outside discovery roots",
+  readme,
+  action,
+  mut_wf_outside,
+  /discovery|producer|journey|outside|missing/
+)
+
+mut_wf_bundles = workflow.sub(
+  /evidence_mode:\s*required\n/,
+  "evidence_mode: required\n          bundles: \".assay/evidence/*.tar.gz\"\n"
+)
+expect_remediation_invalid(
+  "mutation adds explicit bundles input",
+  readme,
+  action,
+  mut_wf_bundles,
+  /bundles must be unset|auto-discovery/
+)
+
+mut_wf_mode = workflow.sub(
+  /evidence_mode:\s*required\n/,
+  "evidence_mode: optional\n"
+)
+expect_remediation_invalid(
+  "mutation removes evidence_mode required",
+  readme,
+  action,
+  mut_wf_mode,
+  /evidence_mode|journey|producer/
+)
+
+mut_wf_verified2 = workflow.sub(
+  'assert row["integrity"] == "verified"',
+  "assert True  # manufactured verified"
+)
+expect_remediation_invalid(
+  "mutation manufactures verified without per-bundle verification",
+  readme,
+  action,
+  mut_wf_verified2,
+  /integrity|per-bundle|manufactured|assert/
+)
+
 puts "docs action contract passed"

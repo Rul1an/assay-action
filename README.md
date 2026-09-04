@@ -97,14 +97,14 @@ schemas:
     required: ["path"]
 ```
 
-Then paste the workflow below. The action installs Assay, runs your test command
-under `assay sandbox`, verifies the generated bundle, and writes the GitHub
-review surfaces.
+Then paste the workflow below. The action installs Assay, runs the command under
+`assay sandbox`, verifies the generated bundle, and writes the GitHub review
+surfaces.
 
 ## From Zero To Evidence In CI
 
-Use this when you want the whole path in one workflow: install Assay, run a test
-command under Assay, then review the produced evidence in GitHub.
+Use this when you want the whole path in one workflow: install Assay, run a
+command under `assay sandbox`, then review the produced evidence in GitHub.
 
 ```yaml
 name: assay-evidence
@@ -128,8 +128,7 @@ jobs:
       - name: Capture and review evidence
         uses: Rul1an/assay-action@v3
         with:
-          sandbox-command: assay run --policy policy.yaml -- pytest tests/
-          bundles: ".assay/evidence/*.tar.gz"
+          sandbox-command: "true"
           baseline_key: ${{ github.event.repository.name }}
           write_baseline: ${{ github.ref == 'refs/heads/main' }}
           fail_on: error
@@ -395,17 +394,20 @@ actions before upgrading pinned workflow dependencies.
 
 ## How Evidence Bundles Fit
 
-This action reviews evidence bundles. The Assay CLI creates them.
+This action reviews evidence bundles. The Assay CLI creates them with the
+released sandbox producer:
 
 ```bash
-assay run --policy policy.yaml -- pytest tests/
+mkdir -p .assay/sandbox .assay/evidence
+assay sandbox --dry-run \
+  --profile .assay/sandbox/profile.yaml \
+  --bundle .assay/evidence/sandbox.tar.gz \
+  -- true
 ```
 
-That produces evidence bundles such as:
-
-```text
-.assay/evidence/run-20260506-123456.tar.gz
-```
+That writes a discoverable evidence bundle at `.assay/evidence/sandbox.tar.gz`.
+The bundle attests the sandbox command's observed effects. It does not attest
+that a test suite passed.
 
 For the artifact-first receipt path, see
 [Evidence Receipts in Action](https://github.com/Rul1an/assay/blob/main/docs/notes/EVIDENCE-RECEIPTS-IN-ACTION.md),
