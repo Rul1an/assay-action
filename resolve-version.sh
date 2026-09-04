@@ -33,10 +33,15 @@ if [[ "$VERSION" == "latest" ]]; then
     -w '%{url_effective}'
     -H "User-Agent: assay-action-installer"
   )
-  EFFECTIVE_URL="$(
+  # Capture effective URL only when curl exits 0. Do not suppress curl status:
+  # a nonzero transfer may still print a plausible url_effective.
+  if ! EFFECTIVE_URL="$(
     curl "${CURL_ARGS[@]}" \
-      "https://github.com/$REPO/releases/latest" || true
-  )"
+      "https://github.com/$REPO/releases/latest"
+  )"; then
+    echo "::error::Failed to fetch latest Assay version"
+    exit 1
+  fi
   VERSION=""
   if [[ "$EFFECTIVE_URL" =~ ^https://github\.com/Rul1an/assay/releases/tag/([^/?#]+)$ ]]; then
     VERSION="${BASH_REMATCH[1]}"

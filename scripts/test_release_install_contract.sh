@@ -46,6 +46,12 @@ if [[ "${FAKE_CURL_NETWORK_FAIL:-0}" == "1" ]]; then
   exit 56
 fi
 
+# Valid-looking effective URL then nonzero curl status (transfer failure).
+if [[ "${FAKE_CURL_URL_THEN_FAIL:-0}" == "1" ]]; then
+  printf '%s' "${FAKE_EFFECTIVE_URL:-https://github.com/Rul1an/assay/releases/tag/v3.35.0}"
+  exit "${FAKE_CURL_FAIL_RC:-22}"
+fi
+
 if [[ "${FAKE_CURL_ENFORCE_CONTRACT:-1}" == "1" ]]; then
   joined=" $* "
   if [[ "$joined" != *" --max-redirs 3 "* ]]; then
@@ -265,6 +271,28 @@ run_latest_redirect_contract() {
   fi
   if [[ -s "$TMP_DIR/network-fail.out" ]]; then
     echo "network failure wrote version outputs" >&2
+    exit 1
+  fi
+
+  # RED/GREEN: curl prints a valid-looking tag URL then exits nonzero — must fail closed
+  # with no GITHUB_OUTPUT writes (exit-status suppression is a false-green).
+  : >"$TMP_DIR/url-then-fail.out"
+  if FAKE_CURL_URL_THEN_FAIL=1 \
+    FAKE_EFFECTIVE_URL="https://github.com/Rul1an/assay/releases/tag/v3.35.0" \
+    GITHUB_OUTPUT="$TMP_DIR/url-then-fail.out" PATH="$TMP_DIR/bin:$PATH" \
+    bash "$REPO_ROOT/resolve-version.sh" latest >"$TMP_DIR/url-then-fail.log" 2>&1
+  then
+    echo "latest succeeded when curl exited nonzero after emitting a tag URL" >&2
+    exit 1
+  fi
+  if [[ -s "$TMP_DIR/url-then-fail.out" ]]; then
+    echo "nonzero curl still wrote version outputs (exit-status false-green)" >&2
+    cat "$TMP_DIR/url-then-fail.out" >&2
+    exit 1
+  fi
+  if ! grep -Fq -- "::error::Failed to fetch latest Assay version" "$TMP_DIR/url-then-fail.log"; then
+    echo "expected fail-closed fetch error for nonzero curl" >&2
+    cat "$TMP_DIR/url-then-fail.log" >&2
     exit 1
   fi
 
@@ -640,6 +668,32 @@ mutate_expect_fail() {
   echo "MUTATION BIT: $name"
 }
 
+
+mut_suppress_curl_exit_status() {
+  python3 - "$RESOLVER" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+old = """  if ! EFFECTIVE_URL="$(
+    curl "${CURL_ARGS[@]}" \\
+      "https://github.com/$REPO/releases/latest"
+  )"; then
+    echo "::error::Failed to fetch latest Assay version"
+    exit 1
+  fi
+"""
+new = """  EFFECTIVE_URL="$(
+    curl "${CURL_ARGS[@]}" \\
+      "https://github.com/$REPO/releases/latest" || true
+  )"
+"""
+if old not in text:
+    raise SystemExit("guarded curl capture not found for exit-status mutation")
+p.write_text(text.replace(old, new, 1))
+PY
+}
+
 mut_restore_api_only() {
   python3 - "$RESOLVER" <<'PY'
 from pathlib import Path
@@ -827,6 +881,7 @@ else
   exit 1
 fi
 
+mutate_expect_fail "suppress-curl-exit-status" mut_suppress_curl_exit_status
 mutate_expect_fail "restore-api-only" mut_restore_api_only
 mutate_expect_fail "raise-redirect-budget" mut_raise_redirect_budget
 mutate_expect_fail "remove-redirect-budget" mut_remove_redirect_budget
