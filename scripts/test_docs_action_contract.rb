@@ -361,13 +361,7 @@ module ExecutableEvidenceRemediation
   LEGACY_FLAT_BUNDLE = ".assay/evidence/sandbox.tar.gz"
   USE_CASE_DOC = "docs/use-cases/mcp-tool-call-audit-trail-in-github-actions.md"
 
-  RECIPE = <<~'SH'.chomp.freeze
-    mkdir -p .assay/sandbox .assay/evidence/nested
-    assay sandbox --dry-run \
-      --profile .assay/sandbox/profile.yaml \
-      --bundle .assay/evidence/nested/sandbox.tar.gz \
-      -- true
-  SH
+  RECIPE_FILE = "scripts/remediation_recipe.cmd"
 
   REQUIRED_TOKENS = [
     "mkdir -p .assay/sandbox .assay/evidence/nested",
@@ -376,6 +370,17 @@ module ExecutableEvidenceRemediation
     "--bundle .assay/evidence/nested/sandbox.tar.gz",
     "-- true"
   ].freeze
+
+  def self.canonical_recipe(repo_root)
+    path = Pathname(repo_root) / RECIPE_FILE
+    raise ContractError, "missing #{RECIPE_FILE}" unless path.file?
+
+    recipe = path.read
+    raise ContractError, "#{RECIPE_FILE} must be a single line" if recipe.include?("\n")
+    raise ContractError, "#{RECIPE_FILE} empty" if recipe.strip.empty?
+
+    recipe
+  end
 
   FORBIDDEN_REMEDIATION = /Run 'assay run'|assay run --policy/
 
@@ -418,24 +423,42 @@ module ExecutableEvidenceRemediation
     }
   end
 
-  def validate_remediation!(readme, action)
+  def validate_remediation!(readme, action, recipe)
     errors = []
-    remediation_surfaces(readme, action).each do |name, text|
-      errors << "#{name}: missing released remediation recipe tokens" unless recipe_tokens_in_order?(text)
-      errors << "#{name}: forbidden non-executable assay run remediation" if text.match?(FORBIDDEN_REMEDIATION)
+    unless recipe_tokens_in_order?(recipe)
+      errors << "#{RECIPE_FILE}: missing released remediation recipe tokens"
     end
-    errors << "README must embed the exact released remediation recipe" unless readme.include?(RECIPE)
-    # action.yml summary echoes the recipe line-by-line (YAML block indentation);
-    # token order on the summary surface is the pin for the Action.
-    # Primary README capture example must not teach the non-executable assay run recipe.
+    surfaces = remediation_surfaces(readme, action)
+    notice = surfaces.fetch("notice")
+    summary = surfaces.fetch("summary")
+    unless action.include?("remediation_recipe.cmd")
+      errors << "action.yml must load #{RECIPE_FILE}"
+    end
+    unless notice.include?("$RECIPE") || notice.include?("remediation_recipe.cmd")
+      errors << "notice: must emit via $RECIPE from #{RECIPE_FILE}"
+    end
+    unless summary.include?("$RECIPE") || summary.include?("remediation_recipe.cmd")
+      errors << "summary: must emit via $RECIPE from #{RECIPE_FILE}"
+    end
+    if action.include?(recipe)
+      errors << "action.yml still hand-syncs the recipe literal; load #{RECIPE_FILE} only"
+    end
+    errors << "README must embed the exact released remediation recipe" unless readme.include?(recipe)
+    surfaces.each do |name, surf|
+      errors << "#{name}: forbidden non-executable assay run remediation" if surf.match?(FORBIDDEN_REMEDIATION)
+    end
     if readme.match?(/sandbox-command:\s*assay run/)
       errors << "README sandbox-command still teaches non-executable assay run remediation"
     end
     if readme.match?(FORBIDDEN_REMEDIATION) || action.match?(FORBIDDEN_REMEDIATION)
       errors << "public surfaces still contain non-executable assay run remediation"
     end
+    if readme.match?(/assay sandbox --dry-run \\\n/)
+      errors << "README still has a second multi-line executable recipe literal"
+    end
     raise ContractError, errors.join("\n") unless errors.empty?
   end
+
 
   def journey_job(workflow_text)
     parsed = YAML.safe_load(workflow_text, aliases: true)
@@ -605,8 +628,9 @@ module ExecutableEvidenceRemediation
     raise ContractError, errors.join("\n") unless errors.empty?
   end
 
-  def validate_public_contract!(readme, action, workflow, use_case)
-    validate_remediation!(readme, action)
+  def validate_public_contract!(readme, action, workflow, use_case, repo_root:)
+    recipe = ExecutableEvidenceRemediation.canonical_recipe(repo_root)
+    validate_remediation!(readme, action, recipe)
     validate_journey!(workflow)
     validate_use_case_public_truth!(use_case)
     validate_quickstart_coherence!(readme)
@@ -615,7 +639,7 @@ end
 
 def expect_remediation_invalid(label, readme, action, workflow, use_case, expected)
   begin
-    ExecutableEvidenceRemediation.validate_public_contract!(readme, action, workflow, use_case)
+    ExecutableEvidenceRemediation.validate_public_contract!(readme, action, workflow, use_case, repo_root: Pathname(__dir__).parent)
   rescue ContractError => error
     raise "#{label}: wrong failure: #{error.message}" unless error.message.match?(expected)
 
@@ -627,7 +651,7 @@ end
 
 workflow = (repo / ".github/workflows/action-sanity.yml").read
 use_case = (repo / ExecutableEvidenceRemediation::USE_CASE_DOC).read
-ExecutableEvidenceRemediation.validate_public_contract!(readme, action, workflow, use_case)
+ExecutableEvidenceRemediation.validate_public_contract!(readme, action, workflow, use_case, repo_root: repo)
 puts "PASS: released remediation recipe pinned across public surfaces"
 puts "PASS: default-discovery sandbox journey pinned"
 puts "PASS: use-case public truth + From Scratch/From Zero coherence pinned"
@@ -647,7 +671,7 @@ expect_remediation_invalid(
 )
 
 mut_summary = action.sub(
-  "echo 'assay sandbox --dry-run \\'",
+  'RECIPE="$(cat "$GITHUB_ACTION_PATH/scripts/remediation_recipe.cmd")"',
   "echo 'assay run --policy policy.yaml -- pytest'"
 )
 expect_remediation_invalid(
@@ -656,10 +680,10 @@ expect_remediation_invalid(
   mut_summary,
   workflow,
   use_case,
-  /forbidden|missing released/
+  /forbidden|assay run|summary|remediation_recipe|load|hand-sync/
 )
 
-mut_readme_recipe = readme.sub(ExecutableEvidenceRemediation::RECIPE, "assay run --policy policy.yaml -- pytest tests/")
+mut_readme_recipe = readme.sub(ExecutableEvidenceRemediation.canonical_recipe(repo), "assay run --policy policy.yaml -- pytest tests/")
 expect_remediation_invalid(
   "mutation restores assay run README remediation",
   mut_readme_recipe,
@@ -810,5 +834,11 @@ expect_remediation_invalid(
   use_case,
   /policy\.yaml|does not consume|From Scratch|quickstart/
 )
+
+exact = repo / "scripts/test_exact_remediation_recipe.sh"
+raise "missing #{exact}" unless exact.file?
+ok = system("bash", exact.to_s)
+raise "exact remediation recipe contract failed" unless ok
+puts "PASS: exact remediation recipe executes"
 
 puts "docs action contract passed"

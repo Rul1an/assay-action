@@ -361,11 +361,7 @@ This action reviews evidence bundles. The Assay CLI creates them with the
 released sandbox producer:
 
 ```bash
-mkdir -p .assay/sandbox .assay/evidence/nested
-assay sandbox --dry-run \
-  --profile .assay/sandbox/profile.yaml \
-  --bundle .assay/evidence/nested/sandbox.tar.gz \
-  -- true
+mkdir -p .assay/sandbox .assay/evidence/nested && assay sandbox --dry-run --profile .assay/sandbox/profile.yaml --bundle .assay/evidence/nested/sandbox.tar.gz -- true
 ```
 
 That writes a discoverable evidence bundle at `.assay/evidence/nested/sandbox.tar.gz`.

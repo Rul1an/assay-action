@@ -458,7 +458,8 @@ runs:
         COUNT="$(grep -E '^count=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2)"
         FOUND="$(grep -E '^found=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2)"
         if [ "${FOUND:-false}" != "true" ]; then
-          echo "::notice::No evidence bundles found. Generate sandbox evidence with the released CLI: mkdir -p .assay/sandbox .assay/evidence/nested && assay sandbox --dry-run --profile .assay/sandbox/profile.yaml --bundle .assay/evidence/nested/sandbox.tar.gz -- true"
+          RECIPE="$(cat "$GITHUB_ACTION_PATH/scripts/remediation_recipe.cmd")"
+          echo "::notice::No evidence bundles found. Generate sandbox evidence with the released CLI: $RECIPE"
         else
           echo "Found $COUNT evidence bundle(s)"
         fi
@@ -693,11 +694,8 @@ runs:
             echo "To generate evidence bundles, use the released Assay CLI sandbox recipe:"
             echo ""
             echo "\`\`\`bash"
-            echo 'mkdir -p .assay/sandbox .assay/evidence/nested'
-            echo 'assay sandbox --dry-run \'
-            echo '  --profile .assay/sandbox/profile.yaml \'
-            echo '  --bundle .assay/evidence/nested/sandbox.tar.gz \'
-            echo '  -- true'
+            RECIPE="$(cat "$GITHUB_ACTION_PATH/scripts/remediation_recipe.cmd")"
+            echo "$RECIPE"
             echo "\`\`\`"
             echo ""
             echo "The bundle attests the sandbox command's observed effects, not that a test suite passed."
