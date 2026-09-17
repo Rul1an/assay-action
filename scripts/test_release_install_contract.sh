@@ -642,6 +642,275 @@ if assert_fail_on_gate "$TMP_DIR/action-pack-gate-mutated.yml"; then
   exit 1
 fi
 
+# --- Rul1an/assay#3080: refuse gs:// and az:// before install ---
+extract_store_scheme_run() {
+  local action_file="$1"
+  local dest="$2"
+  ruby -ryaml -e '
+    action = YAML.safe_load_file(ARGV.fetch(0), aliases: true)
+    steps = action.fetch("runs").fetch("steps")
+    scheme = steps.find { |step| step["id"] == "store-scheme" }
+    abort("missing store-scheme step") if scheme.nil?
+    scheme_i = steps.index { |step| step["id"] == "store-scheme" }
+    resolve_i = steps.index { |step| step["id"] == "check-existing" }
+    install_i = steps.index { |step| step["name"] == "Install Assay CLI" }
+    abort("store-scheme must run before version resolve") if
+      resolve_i.nil? || scheme_i > resolve_i
+    abort("store-scheme must run before Install Assay CLI") if
+      install_i.nil? || scheme_i > install_i
+    abort("store-scheme must not wait for a default-branch push") if
+      scheme.fetch("if", "").include?("github.event_name")
+    store = action.fetch("inputs").fetch("store").fetch("description")
+    abort("store description must name s3://") unless store.include?("s3://")
+    abort("store description must name file://") unless store.include?("file://")
+    abort("store description must name memory://") unless store.include?("memory://")
+    abort("store description must say the Action accepts s3://") unless
+      store.include?("The Action accepts s3://")
+    abort("store description still advertises CLI schemes as Action-supported") if
+      store.include?("The Assay CLI accepts s3://, file://, and memory://")
+    abort("store description still advertises az://container") if
+      store.include?("az://container")
+    abort("store description still advertises gs://bucket") if
+      store.include?("gs://bucket")
+    abort("store description must say file/memory/GCS/Azure are not supported by the Action yet") unless
+      store.include?("not supported by the Action yet")
+    provider = action.fetch("inputs").fetch("store_provider").fetch("description")
+    abort("store_provider still lists gcp as an option") if
+      provider.match?(/Options:.*\bgcp\b/)
+    abort("store_provider still lists azure as an option") if
+      provider.match?(/Options:.*\bazure\b/)
+    later = steps.find { |step| step["id"] == "store-validate" }
+    abort("missing store-validate step") if later.nil?
+    later_run = later.fetch("run")
+    abort("store-validate lost s3:// -> aws") unless
+      later_run.include?(%q{s3://*) DETECTED_PROVIDER="aws"})
+    abort("store-validate still maps gs:// to gcp") if
+      later_run.include?(%q{gs://*) DETECTED_PROVIDER="gcp"})
+    abort("store-validate still maps az:// to azure") if
+      later_run.include?("DETECTED_PROVIDER=\"azure\"")
+    uses = steps.filter_map { |step| step["uses"] }
+    abort("GCP OIDC setup branch is still present") if
+      uses.any? { |name| name.include?("google-github-actions/auth") }
+    abort("Azure OIDC setup branch is still present") if
+      uses.any? { |name| name.include?("azure/login") }
+    scheme_run = scheme.fetch("run")
+    abort("store-scheme still allowlists memory://") if
+      scheme_run.include?(%q{memory://*})
+    abort("store-scheme still allowlists file://") if
+      scheme_run.include?(%q{file://*})
+    abort("store-scheme lost s3:// allowlist") unless
+      scheme_run.include?(%q{s3://*})
+    abort("store-scheme lost allowlist fallback") unless
+      scheme_run.match?(/^\s+\*\)\s*$/m)
+    abort("store-scheme lost azure_* ignore warning") unless
+      scheme_run.include?("::warning::") &&
+      scheme_run.include?("azure_client_id") &&
+      scheme_run.include?("ignored because Azure stores are not supported yet")
+    %w[azure_client_id azure_tenant_id azure_subscription_id].each do |name|
+      abort("missing #{name} input") unless action.fetch("inputs").key?(name)
+    end
+    File.write(ARGV.fetch(1), scheme_run)
+  ' "$action_file" "$dest"
+}
+
+run_store_scheme() {
+  local script="$1"
+  local store="$2"
+  local provider="$3"
+  local log="$4"
+  : >"$TMP_DIR/store-scheme.out"
+  STORE="$store" \
+    PROVIDER="$provider" \
+    AZURE_CLIENT_ID="${AZURE_CLIENT_ID:-}" \
+    AZURE_TENANT_ID="${AZURE_TENANT_ID:-}" \
+    AZURE_SUBSCRIPTION_ID="${AZURE_SUBSCRIPTION_ID:-}" \
+    GITHUB_OUTPUT="$TMP_DIR/store-scheme.out" \
+    bash "$script" >"$log" 2>&1
+}
+
+assert_store_refused() {
+  local label="$1"
+  local log="$2"
+  if grep -Fq -- "s3://" "$log" &&
+    grep -Fq -- "file://" "$log" &&
+    grep -Fq -- "memory://" "$log" &&
+    grep -Fq -- "not supported by the Action yet" "$log" &&
+    ! grep -Fq -- "The Assay CLI accepts s3://, file://, and memory://" "$log"; then
+    echo "PASS: ${label} refused early"
+    return 0
+  fi
+  echo "FAIL: ${label} missing Action-supported s3:// / not-supported message" >&2
+  echo "--- ${log} ---" >&2
+  cat "$log" >&2 || true
+  return 1
+}
+
+STORE_SCHEME_SCRIPT="$TMP_DIR/store-scheme.sh"
+extract_store_scheme_run "$REPO_ROOT/action.yml" "$STORE_SCHEME_SCRIPT"
+
+if run_store_scheme "$STORE_SCHEME_SCRIPT" "gs://bucket" "auto" "$TMP_DIR/store-gs.log"; then
+  echo "FAIL: gs:// was accepted" >&2
+  cat "$TMP_DIR/store-gs.log" >&2 || true
+  exit 1
+fi
+assert_store_refused "gs://" "$TMP_DIR/store-gs.log"
+
+if run_store_scheme "$STORE_SCHEME_SCRIPT" "az://container" "auto" "$TMP_DIR/store-az.log"; then
+  echo "FAIL: az:// was accepted" >&2
+  cat "$TMP_DIR/store-az.log" >&2 || true
+  exit 1
+fi
+assert_store_refused "az://" "$TMP_DIR/store-az.log"
+
+if run_store_scheme \
+  "$STORE_SCHEME_SCRIPT" \
+  "https://acct.blob.core.windows.net/container" \
+  "auto" \
+  "$TMP_DIR/store-azure-https.log"; then
+  echo "FAIL: Azure blob https was accepted" >&2
+  cat "$TMP_DIR/store-azure-https.log" >&2 || true
+  exit 1
+fi
+assert_store_refused "Azure blob https" "$TMP_DIR/store-azure-https.log"
+
+if run_store_scheme "$STORE_SCHEME_SCRIPT" "https://example.com/path" "auto" "$TMP_DIR/store-https.log"; then
+  echo "FAIL: https://example.com/path was accepted" >&2
+  cat "$TMP_DIR/store-https.log" >&2 || true
+  exit 1
+fi
+assert_store_refused "https://example.com/path" "$TMP_DIR/store-https.log"
+
+if run_store_scheme "$STORE_SCHEME_SCRIPT" "ftp://x" "auto" "$TMP_DIR/store-ftp.log"; then
+  echo "FAIL: ftp://x was accepted" >&2
+  cat "$TMP_DIR/store-ftp.log" >&2 || true
+  exit 1
+fi
+assert_store_refused "ftp://x" "$TMP_DIR/store-ftp.log"
+
+assert_store_accepted() {
+  local label="$1"
+  local store="$2"
+  local log="$3"
+  if ! run_store_scheme "$STORE_SCHEME_SCRIPT" "$store" "auto" "$log"; then
+    echo "FAIL: ${label} was refused" >&2
+    cat "$log" >&2 || true
+    exit 1
+  fi
+  if grep -Fq -- "::error::" "$log"; then
+    echo "FAIL: ${label} emitted an error" >&2
+    cat "$log" >&2 || true
+    exit 1
+  fi
+  if grep -Fq -- "::warning::" "$log"; then
+    echo "FAIL: ${label} emitted a warning" >&2
+    cat "$log" >&2 || true
+    exit 1
+  fi
+  echo "PASS: ${label} accepted"
+}
+
+assert_store_accepted "s3://" "s3://bucket/prefix" "$TMP_DIR/store-s3.log"
+
+if run_store_scheme "$STORE_SCHEME_SCRIPT" "memory://scratch" "auto" "$TMP_DIR/store-memory.log"; then
+  echo "FAIL: memory:// was accepted" >&2
+  cat "$TMP_DIR/store-memory.log" >&2 || true
+  exit 1
+fi
+assert_store_refused "memory://" "$TMP_DIR/store-memory.log"
+
+if run_store_scheme "$STORE_SCHEME_SCRIPT" "file:///tmp/assay-store" "auto" "$TMP_DIR/store-file.log"; then
+  echo "FAIL: file:// was accepted" >&2
+  cat "$TMP_DIR/store-file.log" >&2 || true
+  exit 1
+fi
+assert_store_refused "file://" "$TMP_DIR/store-file.log"
+
+extract_store_validate_run() {
+  local action_file="$1"
+  local dest="$2"
+  ruby -ryaml -e '
+    action = YAML.safe_load_file(ARGV.fetch(0), aliases: true)
+    later = action.fetch("runs").fetch("steps").find { |step| step["id"] == "store-validate" }
+    abort("missing store-validate step") if later.nil?
+    File.write(ARGV.fetch(1), later.fetch("run"))
+  ' "$action_file" "$dest"
+}
+
+run_store_validate() {
+  local script="$1"
+  local store="$2"
+  local provider="$3"
+  local role="$4"
+  local log="$5"
+  : >"$TMP_DIR/store-validate.out"
+  STORE="$store" \
+    PROVIDER="$provider" \
+    ROLE="$role" \
+    GITHUB_OUTPUT="$TMP_DIR/store-validate.out" \
+    bash "$script" >"$log" 2>&1
+}
+
+STORE_VALIDATE_SCRIPT="$TMP_DIR/store-validate.sh"
+extract_store_validate_run "$REPO_ROOT/action.yml" "$STORE_VALIDATE_SCRIPT"
+if ! run_store_validate \
+  "$STORE_VALIDATE_SCRIPT" \
+  "s3://bucket/prefix" \
+  "auto" \
+  "arn:aws:iam::123456789012:role/AssayEvidence" \
+  "$TMP_DIR/store-validate-s3.log"; then
+  echo "FAIL: s3:// did not reach store-validate" >&2
+  cat "$TMP_DIR/store-validate-s3.log" >&2 || true
+  exit 1
+fi
+if ! grep -Fq -- "provider=aws" "$TMP_DIR/store-validate.out"; then
+  echo "FAIL: store-validate did not accept s3:// as aws" >&2
+  cat "$TMP_DIR/store-validate-s3.log" >&2 || true
+  cat "$TMP_DIR/store-validate.out" >&2 || true
+  exit 1
+fi
+echo "PASS: s3:// accepted and reached store-validate"
+
+AZURE_CLIENT_ID="unused-client" \
+  run_store_scheme "$STORE_SCHEME_SCRIPT" "s3://bucket/prefix" "auto" "$TMP_DIR/store-azure-warn.log"
+if ! grep -Fq -- "::warning::azure_client_id, azure_tenant_id, and azure_subscription_id are ignored because Azure stores are not supported yet." "$TMP_DIR/store-azure-warn.log"; then
+  echo "FAIL: non-empty azure_* did not emit ignore warning" >&2
+  cat "$TMP_DIR/store-azure-warn.log" >&2 || true
+  exit 1
+fi
+if grep -Fq -- "::error::" "$TMP_DIR/store-azure-warn.log"; then
+  echo "FAIL: azure_* warning path emitted an error" >&2
+  cat "$TMP_DIR/store-azure-warn.log" >&2 || true
+  exit 1
+fi
+echo "PASS: non-empty azure_* emits ignore warning"
+
+STORE_SCHEME_MUTATED="$TMP_DIR/store-scheme-mutated.sh"
+# Mutant: remove the allowlist fallback so https:// is accepted.
+python3 - "$STORE_SCHEME_SCRIPT" "$STORE_SCHEME_MUTATED" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+src_path, dest_path = Path(sys.argv[1]), Path(sys.argv[2])
+src = src_path.read_text()
+new, n = re.subn(
+    r"^[ \t]+\*\)\n(?:.*\n)*?[ \t]+;;\n",
+    "",
+    src,
+    count=1,
+    flags=re.M,
+)
+if n != 1:
+    raise SystemExit(f"allowlist fallback not found for mutant (n={n})")
+dest_path.write_text(new)
+PY
+if run_store_scheme "$STORE_SCHEME_MUTATED" "https://example.com/path" "auto" "$TMP_DIR/store-https-mut.log"; then
+  echo "PASS: mutant remove allowlist fallback failed the https case"
+else
+  echo "mutant remove allowlist fallback stayed green" >&2
+  cat "$TMP_DIR/store-https-mut.log" >&2 || true
+  exit 1
+fi
 
 # --- issue #42 latest-redirect mutation harness ---
 RESOLVER="$REPO_ROOT/resolve-version.sh"
