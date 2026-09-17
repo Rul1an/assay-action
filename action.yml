@@ -102,8 +102,9 @@ inputs:
   store:
     description: |
       BYOS store URL for evidence push.
-      The Assay CLI accepts s3://, file://, and memory://.
-      GCS and Azure Blob stores are not supported yet.
+      The Action accepts s3:// only.
+      file, memory, GCS and Azure stores are not supported by the Action yet
+      (the Assay CLI itself supports file:// and memory:// for local use).
       Requires OIDC trust relationship configured for s3://.
     required: false
     default: ''
@@ -270,17 +271,17 @@ runs:
         fi
 
         case "$STORE" in
-          memory://*|file://*|s3://*)
+          s3://*)
             ;;
           *)
-            echo "::error::Unsupported store URL scheme '${STORE}'. The Assay CLI accepts s3://, file://, and memory://. GCS and Azure Blob stores are not supported yet."
+            echo "::error::Unsupported store URL scheme '${STORE}'. The Action accepts s3://. file, memory, GCS and Azure stores are not supported by the Action yet (the Assay CLI itself supports file:// and memory:// for local use)."
             exit 1
             ;;
         esac
 
         case "${PROVIDER}" in
           gcp|azure)
-            echo "::error::store_provider '${PROVIDER}' is not supported. The Assay CLI accepts s3://, file://, and memory://. GCS and Azure Blob stores are not supported yet."
+            echo "::error::store_provider '${PROVIDER}' is not supported. The Action accepts s3://. file, memory, GCS and Azure stores are not supported by the Action yet (the Assay CLI itself supports file:// and memory:// for local use)."
             exit 1
             ;;
         esac

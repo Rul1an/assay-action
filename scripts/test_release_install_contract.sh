@@ -664,12 +664,16 @@ extract_store_scheme_run() {
     abort("store description must name s3://") unless store.include?("s3://")
     abort("store description must name file://") unless store.include?("file://")
     abort("store description must name memory://") unless store.include?("memory://")
+    abort("store description must say the Action accepts s3://") unless
+      store.include?("The Action accepts s3://")
+    abort("store description still advertises CLI schemes as Action-supported") if
+      store.include?("The Assay CLI accepts s3://, file://, and memory://")
     abort("store description still advertises az://container") if
       store.include?("az://container")
     abort("store description still advertises gs://bucket") if
       store.include?("gs://bucket")
-    abort("store description must say GCS/Azure are not supported yet") unless
-      store.downcase.include?("not supported yet")
+    abort("store description must say file/memory/GCS/Azure are not supported by the Action yet") unless
+      store.include?("not supported by the Action yet")
     provider = action.fetch("inputs").fetch("store_provider").fetch("description")
     abort("store_provider still lists gcp as an option") if
       provider.match?(/Options:.*\bgcp\b/)
@@ -690,8 +694,12 @@ extract_store_scheme_run() {
     abort("Azure OIDC setup branch is still present") if
       uses.any? { |name| name.include?("azure/login") }
     scheme_run = scheme.fetch("run")
-    abort("store-scheme lost memory://|file://|s3:// allowlist") unless
-      scheme_run.include?(%q{memory://*|file://*|s3://*})
+    abort("store-scheme still allowlists memory://") if
+      scheme_run.include?(%q{memory://*})
+    abort("store-scheme still allowlists file://") if
+      scheme_run.include?(%q{file://*})
+    abort("store-scheme lost s3:// allowlist") unless
+      scheme_run.include?(%q{s3://*})
     abort("store-scheme lost allowlist fallback") unless
       scheme_run.match?(/^\s+\*\)\s*$/m)
     abort("store-scheme lost azure_* ignore warning") unless
@@ -726,11 +734,12 @@ assert_store_refused() {
   if grep -Fq -- "s3://" "$log" &&
     grep -Fq -- "file://" "$log" &&
     grep -Fq -- "memory://" "$log" &&
-    grep -Fq -- "not supported yet" "$log"; then
+    grep -Fq -- "not supported by the Action yet" "$log" &&
+    ! grep -Fq -- "The Assay CLI accepts s3://, file://, and memory://" "$log"; then
     echo "PASS: ${label} refused early"
     return 0
   fi
-  echo "FAIL: ${label} missing supported-scheme / not-supported message" >&2
+  echo "FAIL: ${label} missing Action-supported s3:// / not-supported message" >&2
   echo "--- ${log} ---" >&2
   cat "$log" >&2 || true
   return 1
@@ -801,8 +810,65 @@ assert_store_accepted() {
 }
 
 assert_store_accepted "s3://" "s3://bucket/prefix" "$TMP_DIR/store-s3.log"
-assert_store_accepted "memory://" "memory://scratch" "$TMP_DIR/store-memory.log"
-assert_store_accepted "file://" "file:///tmp/assay-store" "$TMP_DIR/store-file.log"
+
+if run_store_scheme "$STORE_SCHEME_SCRIPT" "memory://scratch" "auto" "$TMP_DIR/store-memory.log"; then
+  echo "FAIL: memory:// was accepted" >&2
+  cat "$TMP_DIR/store-memory.log" >&2 || true
+  exit 1
+fi
+assert_store_refused "memory://" "$TMP_DIR/store-memory.log"
+
+if run_store_scheme "$STORE_SCHEME_SCRIPT" "file:///tmp/assay-store" "auto" "$TMP_DIR/store-file.log"; then
+  echo "FAIL: file:// was accepted" >&2
+  cat "$TMP_DIR/store-file.log" >&2 || true
+  exit 1
+fi
+assert_store_refused "file://" "$TMP_DIR/store-file.log"
+
+extract_store_validate_run() {
+  local action_file="$1"
+  local dest="$2"
+  ruby -ryaml -e '
+    action = YAML.safe_load_file(ARGV.fetch(0), aliases: true)
+    later = action.fetch("runs").fetch("steps").find { |step| step["id"] == "store-validate" }
+    abort("missing store-validate step") if later.nil?
+    File.write(ARGV.fetch(1), later.fetch("run"))
+  ' "$action_file" "$dest"
+}
+
+run_store_validate() {
+  local script="$1"
+  local store="$2"
+  local provider="$3"
+  local role="$4"
+  local log="$5"
+  : >"$TMP_DIR/store-validate.out"
+  STORE="$store" \
+    PROVIDER="$provider" \
+    ROLE="$role" \
+    GITHUB_OUTPUT="$TMP_DIR/store-validate.out" \
+    bash "$script" >"$log" 2>&1
+}
+
+STORE_VALIDATE_SCRIPT="$TMP_DIR/store-validate.sh"
+extract_store_validate_run "$REPO_ROOT/action.yml" "$STORE_VALIDATE_SCRIPT"
+if ! run_store_validate \
+  "$STORE_VALIDATE_SCRIPT" \
+  "s3://bucket/prefix" \
+  "auto" \
+  "arn:aws:iam::123456789012:role/AssayEvidence" \
+  "$TMP_DIR/store-validate-s3.log"; then
+  echo "FAIL: s3:// did not reach store-validate" >&2
+  cat "$TMP_DIR/store-validate-s3.log" >&2 || true
+  exit 1
+fi
+if ! grep -Fq -- "provider=aws" "$TMP_DIR/store-validate.out"; then
+  echo "FAIL: store-validate did not accept s3:// as aws" >&2
+  cat "$TMP_DIR/store-validate-s3.log" >&2 || true
+  cat "$TMP_DIR/store-validate.out" >&2 || true
+  exit 1
+fi
+echo "PASS: s3:// accepted and reached store-validate"
 
 AZURE_CLIENT_ID="unused-client" \
   run_store_scheme "$STORE_SCHEME_SCRIPT" "s3://bucket/prefix" "auto" "$TMP_DIR/store-azure-warn.log"
