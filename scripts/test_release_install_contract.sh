@@ -689,7 +689,19 @@ extract_store_scheme_run() {
       uses.any? { |name| name.include?("google-github-actions/auth") }
     abort("Azure OIDC setup branch is still present") if
       uses.any? { |name| name.include?("azure/login") }
-    File.write(ARGV.fetch(1), scheme.fetch("run"))
+    scheme_run = scheme.fetch("run")
+    abort("store-scheme lost memory://|file://|s3:// allowlist") unless
+      scheme_run.include?(%q{memory://*|file://*|s3://*})
+    abort("store-scheme lost allowlist fallback") unless
+      scheme_run.match?(/^\s+\*\)\s*$/m)
+    abort("store-scheme lost azure_* ignore warning") unless
+      scheme_run.include?("::warning::") &&
+      scheme_run.include?("azure_client_id") &&
+      scheme_run.include?("ignored because Azure stores are not supported yet")
+    %w[azure_client_id azure_tenant_id azure_subscription_id].each do |name|
+      abort("missing #{name} input") unless action.fetch("inputs").key?(name)
+    end
+    File.write(ARGV.fetch(1), scheme_run)
   ' "$action_file" "$dest"
 }
 
@@ -701,6 +713,9 @@ run_store_scheme() {
   : >"$TMP_DIR/store-scheme.out"
   STORE="$store" \
     PROVIDER="$provider" \
+    AZURE_CLIENT_ID="${AZURE_CLIENT_ID:-}" \
+    AZURE_TENANT_ID="${AZURE_TENANT_ID:-}" \
+    AZURE_SUBSCRIPTION_ID="${AZURE_SUBSCRIPTION_ID:-}" \
     GITHUB_OUTPUT="$TMP_DIR/store-scheme.out" \
     bash "$script" >"$log" 2>&1
 }
@@ -749,26 +764,85 @@ if run_store_scheme \
 fi
 assert_store_refused "Azure blob https" "$TMP_DIR/store-azure-https.log"
 
-if ! run_store_scheme "$STORE_SCHEME_SCRIPT" "s3://bucket/prefix" "auto" "$TMP_DIR/store-s3.log"; then
-  echo "FAIL: s3:// was refused" >&2
-  cat "$TMP_DIR/store-s3.log" >&2 || true
+if run_store_scheme "$STORE_SCHEME_SCRIPT" "https://example.com/path" "auto" "$TMP_DIR/store-https.log"; then
+  echo "FAIL: https://example.com/path was accepted" >&2
+  cat "$TMP_DIR/store-https.log" >&2 || true
   exit 1
 fi
-if grep -Fq -- "::error::" "$TMP_DIR/store-s3.log"; then
-  echo "FAIL: s3:// emitted an error" >&2
-  cat "$TMP_DIR/store-s3.log" >&2 || true
+assert_store_refused "https://example.com/path" "$TMP_DIR/store-https.log"
+
+if run_store_scheme "$STORE_SCHEME_SCRIPT" "ftp://x" "auto" "$TMP_DIR/store-ftp.log"; then
+  echo "FAIL: ftp://x was accepted" >&2
+  cat "$TMP_DIR/store-ftp.log" >&2 || true
   exit 1
 fi
-echo "PASS: s3:// still accepted"
+assert_store_refused "ftp://x" "$TMP_DIR/store-ftp.log"
+
+assert_store_accepted() {
+  local label="$1"
+  local store="$2"
+  local log="$3"
+  if ! run_store_scheme "$STORE_SCHEME_SCRIPT" "$store" "auto" "$log"; then
+    echo "FAIL: ${label} was refused" >&2
+    cat "$log" >&2 || true
+    exit 1
+  fi
+  if grep -Fq -- "::error::" "$log"; then
+    echo "FAIL: ${label} emitted an error" >&2
+    cat "$log" >&2 || true
+    exit 1
+  fi
+  if grep -Fq -- "::warning::" "$log"; then
+    echo "FAIL: ${label} emitted a warning" >&2
+    cat "$log" >&2 || true
+    exit 1
+  fi
+  echo "PASS: ${label} accepted"
+}
+
+assert_store_accepted "s3://" "s3://bucket/prefix" "$TMP_DIR/store-s3.log"
+assert_store_accepted "memory://" "memory://scratch" "$TMP_DIR/store-memory.log"
+assert_store_accepted "file://" "file:///tmp/assay-store" "$TMP_DIR/store-file.log"
+
+AZURE_CLIENT_ID="unused-client" \
+  run_store_scheme "$STORE_SCHEME_SCRIPT" "s3://bucket/prefix" "auto" "$TMP_DIR/store-azure-warn.log"
+if ! grep -Fq -- "::warning::azure_client_id, azure_tenant_id, and azure_subscription_id are ignored because Azure stores are not supported yet." "$TMP_DIR/store-azure-warn.log"; then
+  echo "FAIL: non-empty azure_* did not emit ignore warning" >&2
+  cat "$TMP_DIR/store-azure-warn.log" >&2 || true
+  exit 1
+fi
+if grep -Fq -- "::error::" "$TMP_DIR/store-azure-warn.log"; then
+  echo "FAIL: azure_* warning path emitted an error" >&2
+  cat "$TMP_DIR/store-azure-warn.log" >&2 || true
+  exit 1
+fi
+echo "PASS: non-empty azure_* emits ignore warning"
 
 STORE_SCHEME_MUTATED="$TMP_DIR/store-scheme-mutated.sh"
-# Mutant: re-allow gs:// by dropping it from the unsupported-scheme case.
-sed 's/gs:\/\/\*|//' "$STORE_SCHEME_SCRIPT" >"$STORE_SCHEME_MUTATED"
-if run_store_scheme "$STORE_SCHEME_MUTATED" "gs://bucket" "auto" "$TMP_DIR/store-gs-mut.log"; then
-  echo "PASS: mutant re-allow gs:// failed the new case"
+# Mutant: remove the allowlist fallback so https:// is accepted.
+python3 - "$STORE_SCHEME_SCRIPT" "$STORE_SCHEME_MUTATED" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+src_path, dest_path = Path(sys.argv[1]), Path(sys.argv[2])
+src = src_path.read_text()
+new, n = re.subn(
+    r"^[ \t]+\*\)\n(?:.*\n)*?[ \t]+;;\n",
+    "",
+    src,
+    count=1,
+    flags=re.M,
+)
+if n != 1:
+    raise SystemExit(f"allowlist fallback not found for mutant (n={n})")
+dest_path.write_text(new)
+PY
+if run_store_scheme "$STORE_SCHEME_MUTATED" "https://example.com/path" "auto" "$TMP_DIR/store-https-mut.log"; then
+  echo "PASS: mutant remove allowlist fallback failed the https case"
 else
-  echo "mutant re-allow gs:// stayed green" >&2
-  cat "$TMP_DIR/store-gs-mut.log" >&2 || true
+  echo "mutant remove allowlist fallback stayed green" >&2
+  cat "$TMP_DIR/store-https-mut.log" >&2 || true
   exit 1
 fi
 

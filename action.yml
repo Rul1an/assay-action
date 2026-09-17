@@ -255,15 +255,24 @@ runs:
       env:
         STORE: ${{ inputs.store }}
         PROVIDER: ${{ inputs.store_provider }}
+        AZURE_CLIENT_ID: ${{ inputs.azure_client_id }}
+        AZURE_TENANT_ID: ${{ inputs.azure_tenant_id }}
+        AZURE_SUBSCRIPTION_ID: ${{ inputs.azure_subscription_id }}
       run: |
         set -euo pipefail
+
+        if [ -n "${AZURE_CLIENT_ID:-}${AZURE_TENANT_ID:-}${AZURE_SUBSCRIPTION_ID:-}" ]; then
+          echo "::warning::azure_client_id, azure_tenant_id, and azure_subscription_id are ignored because Azure stores are not supported yet."
+        fi
 
         if [ -z "${STORE}" ]; then
           exit 0
         fi
 
         case "$STORE" in
-          gs://*|az://*|https://*.blob.core.windows.net/*)
+          memory://*|file://*|s3://*)
+            ;;
+          *)
             echo "::error::Unsupported store URL scheme '${STORE}'. The Assay CLI accepts s3://, file://, and memory://. GCS and Azure Blob stores are not supported yet."
             exit 1
             ;;
