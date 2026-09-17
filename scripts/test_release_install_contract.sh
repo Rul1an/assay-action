@@ -642,6 +642,135 @@ if assert_fail_on_gate "$TMP_DIR/action-pack-gate-mutated.yml"; then
   exit 1
 fi
 
+# --- Rul1an/assay#3080: refuse gs:// and az:// before install ---
+extract_store_scheme_run() {
+  local action_file="$1"
+  local dest="$2"
+  ruby -ryaml -e '
+    action = YAML.safe_load_file(ARGV.fetch(0), aliases: true)
+    steps = action.fetch("runs").fetch("steps")
+    scheme = steps.find { |step| step["id"] == "store-scheme" }
+    abort("missing store-scheme step") if scheme.nil?
+    scheme_i = steps.index { |step| step["id"] == "store-scheme" }
+    resolve_i = steps.index { |step| step["id"] == "check-existing" }
+    install_i = steps.index { |step| step["name"] == "Install Assay CLI" }
+    abort("store-scheme must run before version resolve") if
+      resolve_i.nil? || scheme_i > resolve_i
+    abort("store-scheme must run before Install Assay CLI") if
+      install_i.nil? || scheme_i > install_i
+    abort("store-scheme must not wait for a default-branch push") if
+      scheme.fetch("if", "").include?("github.event_name")
+    store = action.fetch("inputs").fetch("store").fetch("description")
+    abort("store description must name s3://") unless store.include?("s3://")
+    abort("store description must name file://") unless store.include?("file://")
+    abort("store description must name memory://") unless store.include?("memory://")
+    abort("store description still advertises az://container") if
+      store.include?("az://container")
+    abort("store description still advertises gs://bucket") if
+      store.include?("gs://bucket")
+    abort("store description must say GCS/Azure are not supported yet") unless
+      store.downcase.include?("not supported yet")
+    provider = action.fetch("inputs").fetch("store_provider").fetch("description")
+    abort("store_provider still lists gcp as an option") if
+      provider.match?(/Options:.*\bgcp\b/)
+    abort("store_provider still lists azure as an option") if
+      provider.match?(/Options:.*\bazure\b/)
+    later = steps.find { |step| step["id"] == "store-validate" }
+    abort("missing store-validate step") if later.nil?
+    later_run = later.fetch("run")
+    abort("store-validate lost s3:// -> aws") unless
+      later_run.include?(%q{s3://*) DETECTED_PROVIDER="aws"})
+    abort("store-validate still maps gs:// to gcp") if
+      later_run.include?(%q{gs://*) DETECTED_PROVIDER="gcp"})
+    abort("store-validate still maps az:// to azure") if
+      later_run.include?("DETECTED_PROVIDER=\"azure\"")
+    uses = steps.filter_map { |step| step["uses"] }
+    abort("GCP OIDC setup branch is still present") if
+      uses.any? { |name| name.include?("google-github-actions/auth") }
+    abort("Azure OIDC setup branch is still present") if
+      uses.any? { |name| name.include?("azure/login") }
+    File.write(ARGV.fetch(1), scheme.fetch("run"))
+  ' "$action_file" "$dest"
+}
+
+run_store_scheme() {
+  local script="$1"
+  local store="$2"
+  local provider="$3"
+  local log="$4"
+  : >"$TMP_DIR/store-scheme.out"
+  STORE="$store" \
+    PROVIDER="$provider" \
+    GITHUB_OUTPUT="$TMP_DIR/store-scheme.out" \
+    bash "$script" >"$log" 2>&1
+}
+
+assert_store_refused() {
+  local label="$1"
+  local log="$2"
+  if grep -Fq -- "s3://" "$log" &&
+    grep -Fq -- "file://" "$log" &&
+    grep -Fq -- "memory://" "$log" &&
+    grep -Fq -- "not supported yet" "$log"; then
+    echo "PASS: ${label} refused early"
+    return 0
+  fi
+  echo "FAIL: ${label} missing supported-scheme / not-supported message" >&2
+  echo "--- ${log} ---" >&2
+  cat "$log" >&2 || true
+  return 1
+}
+
+STORE_SCHEME_SCRIPT="$TMP_DIR/store-scheme.sh"
+extract_store_scheme_run "$REPO_ROOT/action.yml" "$STORE_SCHEME_SCRIPT"
+
+if run_store_scheme "$STORE_SCHEME_SCRIPT" "gs://bucket" "auto" "$TMP_DIR/store-gs.log"; then
+  echo "FAIL: gs:// was accepted" >&2
+  cat "$TMP_DIR/store-gs.log" >&2 || true
+  exit 1
+fi
+assert_store_refused "gs://" "$TMP_DIR/store-gs.log"
+
+if run_store_scheme "$STORE_SCHEME_SCRIPT" "az://container" "auto" "$TMP_DIR/store-az.log"; then
+  echo "FAIL: az:// was accepted" >&2
+  cat "$TMP_DIR/store-az.log" >&2 || true
+  exit 1
+fi
+assert_store_refused "az://" "$TMP_DIR/store-az.log"
+
+if run_store_scheme \
+  "$STORE_SCHEME_SCRIPT" \
+  "https://acct.blob.core.windows.net/container" \
+  "auto" \
+  "$TMP_DIR/store-azure-https.log"; then
+  echo "FAIL: Azure blob https was accepted" >&2
+  cat "$TMP_DIR/store-azure-https.log" >&2 || true
+  exit 1
+fi
+assert_store_refused "Azure blob https" "$TMP_DIR/store-azure-https.log"
+
+if ! run_store_scheme "$STORE_SCHEME_SCRIPT" "s3://bucket/prefix" "auto" "$TMP_DIR/store-s3.log"; then
+  echo "FAIL: s3:// was refused" >&2
+  cat "$TMP_DIR/store-s3.log" >&2 || true
+  exit 1
+fi
+if grep -Fq -- "::error::" "$TMP_DIR/store-s3.log"; then
+  echo "FAIL: s3:// emitted an error" >&2
+  cat "$TMP_DIR/store-s3.log" >&2 || true
+  exit 1
+fi
+echo "PASS: s3:// still accepted"
+
+STORE_SCHEME_MUTATED="$TMP_DIR/store-scheme-mutated.sh"
+# Mutant: re-allow gs:// by dropping it from the unsupported-scheme case.
+sed 's/gs:\/\/\*|//' "$STORE_SCHEME_SCRIPT" >"$STORE_SCHEME_MUTATED"
+if run_store_scheme "$STORE_SCHEME_MUTATED" "gs://bucket" "auto" "$TMP_DIR/store-gs-mut.log"; then
+  echo "PASS: mutant re-allow gs:// failed the new case"
+else
+  echo "mutant re-allow gs:// stayed green" >&2
+  cat "$TMP_DIR/store-gs-mut.log" >&2 || true
+  exit 1
+fi
 
 # --- issue #42 latest-redirect mutation harness ---
 RESOLVER="$REPO_ROOT/resolve-version.sh"
