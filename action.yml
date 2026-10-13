@@ -1114,8 +1114,11 @@ runs:
         done < "$BUNDLES_FILE"
 
         # Deduplicate and count
-        TOOLS_OBSERVED=$(sort -u "$ALL_TOOLS" | grep -c . 2>/dev/null || echo "0")
-        TOOLS_WITH_DECISIONS=$(sort -u "$DECIDED_TOOLS" | grep -c . 2>/dev/null || echo "0")
+        count_tools() {
+          sort -u "$1" | awk 'length($0) > 0 { count++ } END { print count+0 }'
+        }
+        TOOLS_OBSERVED=$(count_tools "$ALL_TOOLS")
+        TOOLS_WITH_DECISIONS=$(count_tools "$DECIDED_TOOLS")
 
         # Calculate coverage (floor)
         if [ "$TOOLS_OBSERVED" -gt 0 ]; then
