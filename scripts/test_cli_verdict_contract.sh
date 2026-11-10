@@ -39,7 +39,7 @@ trap 'rm -rf "$WORK"' EXIT
 step_script() {
   ruby -ryaml -e '
     doc = YAML.safe_load_file(ARGV[0], aliases: false)
-    step = doc.fetch("runs").fetch("steps").find { |s| s["id"] == ARGV[1] }
+    step = doc.fetch("runs").fetch("steps").find { |s| s["id"] == ARGV[1] || s["name"] == ARGV[1] }
     abort("no step with id #{ARGV[1]}") unless step && step["run"]
     print step["run"]
   ' "$ACTION" "$1"
@@ -181,6 +181,24 @@ run_job pack-fail none "./failing-pack.yaml" clean.tar.gz && {
     pass "pack: pack_score carries only what the CLI emitted"
   fi
 }
+
+# The Job Summary shows the pack outputs. With no score from the CLI it must not print one.
+step_script "Write v2.1 Job Summary additions" > "$WORK/summary.sh"
+: > "$WORK/summary.md"
+env -i PATH="/usr/bin:/bin" GITHUB_STEP_SUMMARY="$WORK/summary.md" PACK_APPLIED="cli-verdict-fixture@1.0.0" \
+  RESOLVED_PACK_REFS="cli-verdict-fixture@1.0.0" PACK_SCORE="" PACK_ARTICLES="" PACK_STATUS="success" \
+  PACK_ERROR_KIND="" PACK_DISCLAIMER="" ATTESTATION_ID="" ATTESTATION_URL="" ATTEST_ENABLED="false" \
+  ATTEST_OUTCOME="" COVERAGE="" EVENT_NAME="pull_request" IS_DEFAULT_BRANCH="false" bash "$WORK/summary.sh"
+if grep -q "cli-verdict-fixture@1.0.0" "$WORK/summary.md"; then
+  pass "summary: the pack section is written (control)"
+else
+  fail "summary: the pack section is missing"
+fi
+if grep -Eq "[0-9]+%" "$WORK/summary.md"; then
+  fail "summary: prints a score ($(grep -Eo "[0-9]+%" "$WORK/summary.md" | head -n1)) although none was reported"
+else
+  pass "summary: prints no score when none was reported"
+fi
 
 # Leg 3: the pack results leave the job. The pack step must run before the reports artifact is uploaded, so the
 # artifact can hold the pack SARIF.
