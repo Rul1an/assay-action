@@ -1,0 +1,16 @@
+name: cli-verdict-fixture
+version: "1.0.0"
+kind: quality
+description: One rule that fails on any bundle without an assay.never.emitted event
+author: test
+license: Apache-2.0
+requires:
+  assay_min_version: ">=3.3.0"
+rules:
+  - id: CLV-001
+    severity: error
+    description: needs an event that never occurs
+    event_types: [assay.never.emitted]
+    check:
+      type: event_count
+      min: 1
