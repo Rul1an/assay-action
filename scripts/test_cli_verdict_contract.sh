@@ -81,7 +81,7 @@ run_job() { # <name> <fail_on> <packs or ""> <bundle>...
   : > "$WS/out.discover"
   : > "$WS/out.process"
   : > "$WS/out.pack"
-  local base=(env -i HOME="$WORK/home" PATH="$ASSAY_BIN_DIR:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
+  local base=(env -i HOME="$WORK/home" PATH="${CLI_DIR:-$ASSAY_BIN_DIR}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
     GITHUB_WORKSPACE="$WS/ws" GITHUB_ACTION_PATH="$REPO_ROOT" RUNNER_TEMP="$WS/tmp")
 
   (cd "$WS/ws" && "${base[@]}" GITHUB_OUTPUT="$WS/out.discover" BUNDLES_PATTERN=".assay/evidence/*.tar.gz" \
@@ -155,6 +155,32 @@ run_job gate-error error "" warning.tar.gz && {
 run_job gate-warn warn "" warning.tar.gz && {
   [[ "$(cat "$WS/process.code")" == "1" ]] && pass "gate: a warning fails fail_on=warn" \
     || fail "gate: fail_on=warn exited $(cat "$WS/process.code") on a warning"
+}
+
+# A report that carries findings and no summary cannot be counted, and must not be published as clean. The
+# wrapper below is the real CLI with the summary removed from its JSON report.
+mkdir -p "$WORK/nosummary"
+cat > "$WORK/nosummary/assay" <<SH
+#!/usr/bin/env bash
+if [[ " \$* " == *" --format json "* ]]; then
+  out=\$("$ASSAY_BIN_DIR/assay" "\$@"); code=\$?
+  printf '%s' "\$out" | jq 'del(.summary)'
+  exit \$code
+fi
+exec "$ASSAY_BIN_DIR/assay" "\$@"
+SH
+chmod +x "$WORK/nosummary/assay"
+CLI_DIR="$WORK/nosummary" run_job no-summary none "" warning.tar.gz && {
+  if [[ "$(cat "$WS/process.code")" == "2" && -z "$(output_of "$WS/out.process" findings_warn)" ]]; then
+    pass "no-summary: findings without a summary are refused, not published as zero"
+  else
+    fail "no-summary: exit $(cat "$WS/process.code"), findings_warn='$(output_of "$WS/out.process" findings_warn)'"
+  fi
+}
+CLI_DIR="$WORK/nosummary" run_job no-summary-clean none "" clean.tar.gz && {
+  [[ "$(cat "$WS/process.code")" == "0" && "$(output_of "$WS/out.process" findings_warn)" == "0" ]] \
+    && pass "no-summary: a report without findings still counts zero (control)" \
+    || fail "no-summary: the clean report exited $(cat "$WS/process.code")"
 }
 
 # Leg 2: a pack that fails. The CLI reports an error finding for it and no score; the action must not publish a
