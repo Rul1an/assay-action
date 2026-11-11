@@ -97,6 +97,15 @@ jobs:
           assay evidence lint --format sarif "$BUNDLE" > "$SARIF"
           python3 -m json.tool "$SARIF" >/dev/null
 
+      - name: Assert v3 counts equal the CLI report
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          BUNDLE: ${{ runner.temp }}/assay-coding-agent.tar.gz
+          FINDINGS_ERROR: ${{ steps.sandbox-canary.outputs.findings_error }}
+          FINDINGS_WARN: ${{ steps.sandbox-canary.outputs.findings_warn }}
+        run: bash scripts/assert_counts_match_cli.sh "$BUNDLE"
+
   assay-action-v2:
     name: assay-action@v2 (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -215,3 +224,22 @@ jobs:
           assert d["bundles"] == []
           assert hashlib.sha256(raw).hexdigest() == sys.argv[2]
           ' "$INDEX_PATH" "$INDEX_DIGEST"
+
+      - name: Run candidate sandbox bundle review
+        id: candidate-sandbox
+        uses: ./
+        with:
+          version: ${{ steps.cli-version.outputs.value }}
+          sandbox-command: "true"
+          sarif: false
+          comment_diff: false
+          upload_artifacts: false
+          fail_on: error
+
+      - name: Assert candidate counts equal the CLI report
+        shell: bash
+        env:
+          BUNDLE: ${{ runner.temp }}/assay-coding-agent.tar.gz
+          FINDINGS_ERROR: ${{ steps.candidate-sandbox.outputs.findings_error }}
+          FINDINGS_WARN: ${{ steps.candidate-sandbox.outputs.findings_warn }}
+        run: bash scripts/assert_counts_match_cli.sh "$BUNDLE"

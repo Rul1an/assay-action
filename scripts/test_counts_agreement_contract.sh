@@ -14,7 +14,7 @@ set -euo pipefail
 # Without a CLI this fails; it never skips.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ASSERT="$REPO_ROOT/scripts/assert_counts_match_cli.sh"
+ASSERT="${ASSERT_SCRIPT:-$REPO_ROOT/scripts/assert_counts_match_cli.sh}"
 FIXTURES="$REPO_ROOT/scripts/fixtures/cli-verdict"
 SANITY="${SANITY_WORKFLOW:-$REPO_ROOT/.github/workflows/action-sanity.yml}"
 CANARY="${CANARY_WORKFLOW:-$REPO_ROOT/.github/workflows/published-tag-canary.yml}"
@@ -99,6 +99,11 @@ else
 
   expect_code "a missing bundle is an error, not a mismatch" 2 \
     "$(run_assert "$ASSAY_BIN_DIR" "$O_ERR" "$O_WARN" "$WORK/absent.tar.gz")"
+
+  # A file the CLI cannot report on: without a report there is nothing to compare with.
+  printf 'not a bundle\n' > "$WORK/corrupt.tar.gz"
+  expect_code "a bundle the CLI cannot report on is an error, not a pass" 2 \
+    "$(run_assert "$ASSAY_BIN_DIR" "$O_ERR" "$O_WARN" "$WORK/corrupt.tar.gz")"
 
   mkdir -p "$WORK/no-cli"
   expect_code "a missing CLI is an error, not a pass" 2 "$(run_assert "$WORK/no-cli" "$O_ERR" "$O_WARN" "$WARNING")"

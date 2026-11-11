@@ -221,6 +221,23 @@ jobs:
           assert row["sha256"] == produced
           ' "$INDEX_PATH" "$INDEX_DIGEST" "$PRODUCED_SHA"
 
+      # The counts the action publishes must be the CLI's own. The sandbox
+      # bundle carries a warning, so an action that counts nothing fails here.
+      - name: Assert the published counts equal the CLI report
+        shell: bash
+        env:
+          FINDINGS_ERROR: ${{ steps.review.outputs.findings_error }}
+          FINDINGS_WARN: ${{ steps.review.outputs.findings_warn }}
+        run: bash scripts/assert_counts_match_cli.sh .assay/evidence/nested/sandbox.tar.gz
+
+      - name: Verify the action reports the CLI verdict
+        shell: bash
+        run: ASSAY_BIN_DIR="$(dirname "$(command -v assay)")" bash scripts/test_cli_verdict_contract.sh
+
+      - name: Verify the counts agreement contract
+        shell: bash
+        run: ASSAY_BIN_DIR="$(dirname "$(command -v assay)")" bash scripts/test_counts_agreement_contract.sh
+
   required-zero-pr:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
