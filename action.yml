@@ -723,6 +723,7 @@ runs:
         FOUND: ${{ steps.discover.outputs.found }}
         COUNT: ${{ steps.discover.outputs.count }}
         VERIFIED: ${{ steps.process.outputs.verified }}
+        PROCESS_OUTCOME: ${{ steps.process.outcome }}
         VERIFIED_COUNT: ${{ steps.process.outputs.verified_count }}
         FAILED_COUNT: ${{ steps.process.outputs.failed_count }}
         ERRORS: ${{ steps.process.outputs.findings_error }}
@@ -749,8 +750,10 @@ runs:
             echo "The bundle attests the sandbox command's observed effects, not that a test suite passed."
             echo "Bundles are written under \`.assay/evidence/\`"
           else
-            # Status badge
-            if [ "$VERIFIED" = "true" ] && [ "${ERRORS:-0}" = "0" ]; then
+            # Status badge. This step runs on every job, so "Passed" also needs the process step
+            # itself to have succeeded: it can fail after verification, on the gate or before it
+            # published any count, and neither case is a pass.
+            if [ "$PROCESS_OUTCOME" = "success" ] && [ "$VERIFIED" = "true" ] && [ "${ERRORS:-0}" = "0" ]; then
               echo "**Status:** Passed"
             else
               echo "**Status:** Failed"
@@ -764,8 +767,9 @@ runs:
             if [ "${FAILED_COUNT:-0}" -gt 0 ]; then
               echo "| Verification failed | ${FAILED_COUNT} |"
             fi
-            echo "| Errors | ${ERRORS:-0} |"
-            echo "| Warnings | ${WARNS:-0} |"
+            # A count the process step never published is unavailable, not zero.
+            echo "| Errors | ${ERRORS:-unavailable} |"
+            echo "| Warnings | ${WARNS:-unavailable} |"
 
             # Show baseline diff if available
             if [ "${BASELINE_FOUND:-false}" = "true" ]; then
