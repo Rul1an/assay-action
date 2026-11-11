@@ -198,6 +198,9 @@ run_job pack-fail none "./failing-pack.yaml" clean.tar.gz && {
     || fail "pack: the pack step exited $(cat "$WS/pack.code") under fail_on=none"
   [[ "$(output_of "$WS/out.pack" pack_status)" == "success" ]] && pass "pack: pack_status keeps its load-status meaning" \
     || fail "pack: pack_status is '$(output_of "$WS/out.pack" pack_status)'"
+  [[ "$(output_of "$WS/out.pack" pack_applied)" == "cli-verdict-fixture@1.0.0" ]] \
+    && pass "pack: pack_applied names the pack that was passed in" \
+    || fail "pack: pack_applied is '$(output_of "$WS/out.pack" pack_applied)', not the pack that was passed in"
   cli_score=$(jq -r '[.runs[].properties.complianceScore?] | map(select(. != null)) | length' \
     "$(output_of "$WS/out.process" reports_dir)/pack-lint.sarif")
   got_score=$(output_of "$WS/out.pack" pack_score)
@@ -207,6 +210,62 @@ run_job pack-fail none "./failing-pack.yaml" clean.tar.gz && {
     pass "pack: pack_score carries only what the CLI emitted"
   fi
 }
+
+# A score the CLI does report must come through unchanged. The wrapper is the real CLI with a score added to its
+# SARIF, because no released CLI emits one; without this, an action that always published an empty score would pass.
+mkdir -p "$WORK/scored"
+cat > "$WORK/scored/assay" <<SH
+#!/usr/bin/env bash
+if [[ " \$* " == *" --format sarif "* ]]; then
+  out=\$("$ASSAY_BIN_DIR/assay" "\$@"); code=\$?
+  printf '%s' "\$out" | jq '.runs[].properties.complianceScore = 80'
+  exit \$code
+fi
+exec "$ASSAY_BIN_DIR/assay" "\$@"
+SH
+chmod +x "$WORK/scored/assay"
+CLI_DIR="$WORK/scored" run_job pack-scored none "./failing-pack.yaml" clean.tar.gz && {
+  [[ "$(output_of "$WS/out.pack" pack_score)" == "80" ]] \
+    && pass "pack: a score the CLI reports is published unchanged" \
+    || fail "pack: the CLI reported a score of 80, the action published '$(output_of "$WS/out.pack" pack_score)'"
+}
+
+# The main Job Summary runs on every job, also after the process step failed. It may say "Passed" only when that
+# step succeeded, and it must not print a count that the step never published.
+step_script "Write Job Summary" > "$WORK/job-summary.sh"
+job_summary() { # <process outcome> <verified> <errors> <warnings>; prints the summary
+  local out="$WORK/job-summary-$RANDOM.md"
+  : > "$out"
+  env -i PATH="/usr/bin:/bin" GITHUB_STEP_SUMMARY="$out" GITHUB_ACTION_PATH="$REPO_ROOT" FOUND=true COUNT=1 \
+    PROCESS_OUTCOME="$1" VERIFIED="$2" VERIFIED_COUNT=1 FAILED_COUNT=0 ERRORS="$3" WARNS="$4" \
+    SARIF_UPLOADED="" SARIF_ENABLED=false NEW_FINDINGS="" BASELINE_FOUND="" bash "$WORK/job-summary.sh"
+  cat "$out"
+}
+summary_ok=$(job_summary success true 0 1)
+if grep -q '^\*\*Status:\*\* Passed$' <<<"$summary_ok" && grep -q '^| Warnings | 1 |$' <<<"$summary_ok"; then
+  pass "job summary: a successful process step with one warning shows Passed and the count (control)"
+else
+  fail "job summary: the successful case lost its status or its count"
+fi
+# The step stopped with exit 2 after verification: verified is already true and no count was published.
+summary_broken=$(job_summary failure true "" "")
+if grep -q 'Passed' <<<"$summary_broken"; then
+  fail "job summary: shows Passed although the process step failed before publishing counts"
+else
+  pass "job summary: a failed process step never shows Passed"
+fi
+if grep -q '^| Errors | unavailable |$' <<<"$summary_broken" && grep -q '^| Warnings | unavailable |$' <<<"$summary_broken"; then
+  pass "job summary: unpublished counts are shown as unavailable"
+else
+  fail "job summary: unpublished counts are shown as a number ($(grep -E '^\| (Errors|Warnings) ' <<<"$summary_broken" | tr '\n' ' '))"
+fi
+# The gate failed on a warning (fail_on=warn): zero errors, one warning, step outcome failure.
+summary_gate=$(job_summary failure true 0 1)
+if grep -q 'Passed' <<<"$summary_gate"; then
+  fail "job summary: shows Passed although the gate failed the process step on a warning"
+else
+  pass "job summary: a gate failure on a warning never shows Passed"
+fi
 
 # The Job Summary shows the pack outputs. With no score from the CLI it must not print one.
 step_script "Write v2.1 Job Summary additions" > "$WORK/summary.sh"
