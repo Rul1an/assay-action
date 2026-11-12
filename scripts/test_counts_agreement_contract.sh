@@ -244,6 +244,50 @@ check_runs "the required sandbox job runs the verdict contract with the installe
 check_runs "the required sandbox job runs this contract with the installed CLI" \
   'ASSAY_BIN_DIR="$(dirname "$(command -v assay)")" bash scripts/test_counts_agreement_contract.sh'
 
+# The candidate lane runs the verdict contract on the tagged action with the CLI the action installed, after the
+# sandbox review. With the latest CLI the run requires the list of rules not run, so a tag is proven on a real CLI
+# before the floating tag moves; a manual CLI override for triage does not require it.
+# shellcheck disable=SC2016 # Ruby compares literal workflow expressions.
+if out=$(ruby -ryaml -e '
+  job = YAML.safe_load_file(ARGV[0], aliases: false).fetch("jobs").fetch("assay-action-candidate")
+  steps = job.fetch("steps")
+  want_run = %q{ASSAY_BIN_DIR="$(dirname "$(command -v assay)")" bash scripts/test_cli_verdict_contract.sh}
+  hits = steps.each_index.select { |i| steps[i]["run"].to_s.strip == want_run }
+  abort("expected exactly one step running the verdict contract, found #{hits.length}") unless hits.length == 1
+  step = steps[hits.first]
+  extra = step.keys - %w[name shell env run]
+  abort("the contract step has unexpected keys: #{extra.join(", ")}") unless extra.empty?
+  abort("the contract step must use shell: bash") unless step["shell"] == "bash"
+  want_env = { "REQUIRE_SKIPPED_RULES" => "${{ steps.cli-version.outputs.value == \x27latest\x27 && \x271\x27 || \x270\x27 }}" }
+  abort("the contract step env must be exactly #{want_env.inspect}, got #{step["env"].inspect}") unless step["env"] == want_env
+  review = steps.index { |s| s["id"] == "candidate-sandbox" }
+  abort("no candidate-sandbox step") unless review
+  abort("the contract step must come after the sandbox review") unless review < hits.first
+  version = steps.index { |s| s["id"] == "cli-version" }
+  abort("no cli-version step before the contract step") unless version && version < hits.first
+  # The requirement reads the output of that step, so what the step emits is pinned too: "latest" unless the operator
+  # asked for another CLI, and both runs of the action install exactly that value.
+  resolve = steps[version]
+  abort("the cli-version step has unexpected keys: #{(resolve.keys - %w[name id shell env run]).join(", ")}") unless
+    (resolve.keys - %w[name id shell env run]).empty?
+  abort("the cli-version step env must be the dispatch input only, got #{resolve["env"].inspect}") unless
+    resolve["env"] == { "REQUESTED_VERSION" => "${{ inputs.assay_cli_version }}" }
+  want_resolve = "set -euo pipefail\nversion=\"${REQUESTED_VERSION:-latest}\"\necho \"value=$version\" >> \"$GITHUB_OUTPUT\""
+  abort("the cli-version step must emit the requested version or latest, got #{resolve["run"].inspect}") unless
+    resolve["run"].to_s.strip == want_resolve
+  abort("exactly one step may have id cli-version") unless steps.count { |s| s["id"] == "cli-version" } == 1
+  installs = steps.select { |s| s["uses"] == "./" }
+  abort("the candidate lane must run the tagged action") if installs.empty?
+  installs.each do |s|
+    abort("step #{s["id"].inspect} must install ${{ steps.cli-version.outputs.value }}, got #{s.dig("with", "version").inspect}") unless
+      s.dig("with", "version") == "${{ steps.cli-version.outputs.value }}"
+  end
+' "$CANARY" 2>&1); then
+  pass "wiring: the candidate lane runs the verdict contract and requires the rules-not-run list with the latest CLI"
+else
+  fail "wiring: the candidate lane and the verdict contract: $out"
+fi
+
 if [[ "$failed" -gt 0 ]]; then
   echo "$failed check(s) failed" >&2
   exit 1
