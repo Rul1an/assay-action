@@ -1,0 +1,22 @@
+name: cli-verdict-not-run
+version: "1.0.0"
+kind: quality
+description: One rule this engine cannot run and one it can
+author: test
+license: Apache-2.0
+requires:
+  assay_min_version: ">=3.3.0"
+rules:
+  - id: CNR-001
+    severity: error
+    description: a check type this engine does not know
+    check:
+      type: event_kount
+      min: 1
+  - id: CNR-002
+    severity: warning
+    description: needs an event that never occurs
+    event_types: [assay.never.emitted]
+    check:
+      type: event_count
+      min: 1

@@ -208,6 +208,26 @@ CLI_DIR="$WORK/nosummary" run_job no-summary-clean none "" clean.tar.gz && {
     || fail "no-summary: the clean report exited $(cat "$WS/process.code")"
 }
 
+# A summary without an info count: the action has no number to publish, and zero would be one.
+mkdir -p "$WORK/noinfos"
+cat > "$WORK/noinfos/assay" <<SH
+#!/usr/bin/env bash
+if [[ " \$* " == *" --format json "* ]]; then
+  out=\$("$ASSAY_BIN_DIR/assay" "\$@"); code=\$?
+  printf '%s' "\$out" | jq 'del(.summary.infos)'
+  exit \$code
+fi
+exec "$ASSAY_BIN_DIR/assay" "\$@"
+SH
+chmod +x "$WORK/noinfos/assay"
+CLI_DIR="$WORK/noinfos" run_job no-infos none "" warning.tar.gz && {
+  if grep -q '^findings_info=$' "$WS/out.process" && [[ "$(output_of "$WS/out.process" findings_warn)" == "1" ]]; then
+    pass "no-infos: a summary without an info count leaves findings_info empty, and the other counts stand"
+  else
+    fail "no-infos: findings_info is '$(output_of "$WS/out.process" findings_info || true)' for a summary without an info count"
+  fi
+}
+
 # Leg 2: a pack that fails. The CLI reports an error finding for it and no score; the action must not publish a
 # score the CLI never computed.
 run_job pack-fail none "./failing-pack.yaml" clean.tar.gz && {
@@ -308,6 +328,115 @@ if grep -Eq "[0-9]+%" "$WORK/summary.md"; then
   fail "summary: prints a score ($(grep -Eo "[0-9]+%" "$WORK/summary.md" | head -n1)) although none was reported"
 else
   pass "summary: prints no score when none was reported"
+fi
+
+# Leg 4: pack rules the engine did not run. Such a rule produces no finding, so a pack that skipped it reads like a
+# pack that ran it and passed. The CLI lists them as `skipped_rules` in its JSON report; the action must publish that
+# list's size, name each rule, and say "not reported" for a CLI that has no such list. It must never publish zero
+# for a list it was not given.
+not_run_oracle() { # prints the number of distinct rules the CLI under test says it did not run, or "" if it does not say
+  (cd "$WS/ws" && assay_cli evidence lint --format json --fail-on none --pack ./not-run-pack.yaml \
+    .assay/evidence/clean.tar.gz 2>/dev/null) \
+    | jq -r 'if has("skipped_rules") then (.skipped_rules | map(.rule_id) | unique | length) else "" end'
+}
+run_job not-run-real none "./not-run-pack.yaml" clean.tar.gz && {
+  want=$(not_run_oracle)
+  got=$(output_of "$WS/out.pack" pack_rules_not_run || true)
+  if [[ "$(cat "$WS/pack.code")" == "0" && "$got" == "$want" ]]; then
+    pass "not run: pack_rules_not_run='$got' equals what the CLI under test reports"
+  else
+    fail "not run: action says '$got', the CLI under test says '$want' (pack step exit $(cat "$WS/pack.code"))"
+  fi
+}
+
+# The two answers, each with a wrapper around the real CLI, so both are exercised whatever CLI is under test.
+mkdir -p "$WORK/notrun-lists" "$WORK/notrun-silent"
+cat > "$WORK/notrun-lists/assay" <<SH
+#!/usr/bin/env bash
+if [[ " \$* " == *" --format json "* && " \$* " == *" --pack "* ]]; then
+  out=\$("$ASSAY_BIN_DIR/assay" "\$@"); code=\$?
+  printf '%s' "\$out" | jq '.skipped_rules = [
+    {"rule_id": "cli-verdict-not-run@1.0.0:CNR-001", "reason": "Unknown check type"},
+    {"rule_id": "cli-verdict-not-run@1.0.0:CNR-900", "reason": "50% of a\\nsecond line"}]'
+  exit \$code
+fi
+exec "$ASSAY_BIN_DIR/assay" "\$@"
+SH
+cat > "$WORK/notrun-silent/assay" <<SH
+#!/usr/bin/env bash
+if [[ " \$* " == *" --format json "* ]]; then
+  out=\$("$ASSAY_BIN_DIR/assay" "\$@"); code=\$?
+  printf '%s' "\$out" | jq 'del(.skipped_rules)'
+  exit \$code
+fi
+exec "$ASSAY_BIN_DIR/assay" "\$@"
+SH
+chmod +x "$WORK/notrun-lists/assay" "$WORK/notrun-silent/assay"
+
+pack_summary() { # <pack_rules_not_run> <file>; prints the pack section of the Job Summary
+  local out="$WORK/pack-summary-$RANDOM.md"
+  : > "$out"
+  env -i PATH="/usr/bin:/bin" GITHUB_STEP_SUMMARY="$out" PACK_APPLIED="cli-verdict-not-run@1.0.0" \
+    RESOLVED_PACK_REFS="cli-verdict-not-run@1.0.0" PACK_SCORE="" PACK_ARTICLES="" PACK_STATUS="success" \
+    PACK_ERROR_KIND="" PACK_DISCLAIMER="" PACK_RULES_NOT_RUN="$1" PACK_RULES_NOT_RUN_FILE="$2" ATTESTATION_ID="" \
+    ATTESTATION_URL="" ATTEST_ENABLED="false" ATTEST_OUTCOME="" COVERAGE="" EVENT_NAME="pull_request" \
+    IS_DEFAULT_BRANCH="false" bash "$WORK/summary.sh"
+  cat "$out"
+}
+
+CLI_DIR="$WORK/notrun-lists" run_job not-run-lists warn "./not-run-pack.yaml" clean.tar.gz && {
+  got=$(output_of "$WS/out.pack" pack_rules_not_run || true)
+  [[ "$got" == "2" ]] && pass "not run: two rules the CLI lists are published as 2" \
+    || fail "not run: the CLI lists two rules, the action publishes '$got'"
+  if grep -Fq '::warning title=Pack rule not run::Pack rule cli-verdict-not-run@1.0.0:CNR-001 was not run: Unknown check type.' "$WS/pack.log"; then
+    pass "not run: each rule gets a warning annotation that names it and the reason"
+  else
+    fail "not run: no warning annotation names cli-verdict-not-run@1.0.0:CNR-001"
+  fi
+  # A reason is pack-controlled text inside a workflow command: one line, with % escaped.
+  if grep -Fq 'CNR-900 was not run: 50%25 of a second line.' "$WS/pack.log" \
+    && ! grep -q '^second line' "$WS/pack.log"; then
+    pass "not run: a reason with a newline and a percent sign stays one escaped annotation"
+  else
+    fail "not run: a reason with a newline or a percent sign leaves its annotation"
+  fi
+  # The pack has a warning finding and the gate is warn: the step fails, and the rules are still disclosed.
+  [[ "$(cat "$WS/pack.code")" == "1" ]] && pass "not run: the list is published although the gate fails the step" \
+    || fail "not run: expected the gate to fail the pack step, got exit $(cat "$WS/pack.code")"
+  listed=$(pack_summary "$got" "$(output_of "$WS/out.pack" pack_rules_not_run_file || true)")
+  if grep -q '^- Rules not run: 2$' <<<"$listed" && grep -Fq 'cli-verdict-not-run@1.0.0:CNR-001' <<<"$listed" \
+    && grep -Fq 'did not pass' <<<"$listed"; then
+    pass "not run: the job summary gives the count, names the rules and says they did not pass"
+  else
+    fail "not run: the job summary does not list the rules that were not run"
+  fi
+}
+CLI_DIR="$WORK/notrun-silent" run_job not-run-silent none "./not-run-pack.yaml" clean.tar.gz && {
+  got=$(output_of "$WS/out.pack" pack_rules_not_run || true)
+  if grep -q '^pack_rules_not_run=$' "$WS/out.pack"; then
+    pass "not run: a CLI without the list leaves the count empty, not zero"
+  else
+    fail "not run: a CLI without the list is published as '$got'"
+  fi
+  silent=$(pack_summary "" "")
+  grep -q '^- Rules not run: not reported by this CLI version$' <<<"$silent" \
+    && pass "not run: the job summary says the CLI does not report the list" \
+    || fail "not run: the job summary is silent about a CLI that does not report the list"
+}
+none=$(pack_summary "0" "")
+grep -q '^- Rules not run: 0$' <<<"$none" && pass "not run: a reported empty list is shown as 0 (control)" \
+  || fail "not run: a reported empty list is not shown as 0"
+# shellcheck disable=SC2016 # Ruby compares a literal workflow expression.
+if out=$(ruby -ryaml -e '
+  declared = YAML.safe_load_file(ARGV[0], aliases: false).fetch("outputs")
+  want = "${{ steps.pack-lint.outputs.pack_rules_not_run }}"
+  abort("pack_rules_not_run must be declared as #{want}") unless declared.dig("pack_rules_not_run", "value") == want
+  abort("README does not document pack_rules_not_run") unless
+    File.read(ARGV[1], encoding: "UTF-8").match?(/^\| `pack_rules_not_run` \|/)
+' "$ACTION" "$REPO_ROOT/README.md" 2>&1); then
+  pass "not run: pack_rules_not_run is a declared and documented output"
+else
+  fail "not run: $out"
 fi
 
 # Leg 3: the pack results leave the job. The pack step must run before the reports artifact is uploaded, so the

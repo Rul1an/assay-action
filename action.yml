@@ -234,6 +234,9 @@ outputs:
   pack_error_kind:
     description: 'Pack error category when pack_status is not success'
     value: ${{ steps.pack-lint.outputs.pack_error_kind }}
+  pack_rules_not_run:
+    description: 'Count of pack rules the CLI reports it did not run; empty when the CLI does not report them'
+    value: ${{ steps.pack-lint.outputs.pack_rules_not_run }}
   bundle_url:
     description: 'URL of pushed evidence bundle in BYOS (if store set)'
     value: ${{ steps.byos-push.outputs.bundle_url }}
@@ -1084,6 +1087,41 @@ runs:
         echo "pack_status=success" >> $GITHUB_OUTPUT
         echo "pack_error_kind=" >> $GITHUB_OUTPUT
 
+        # Pack rules the engine did not run. Such a rule produces no finding, so without this the
+        # pack reads as if the rule ran and passed. The list is the CLI's own (`skipped_rules` in
+        # its JSON report). A CLI that does not report it leaves the count empty, never zero.
+        # This runs before the gate below, so the list is published when the gate fails the step.
+        NOT_RUN_FILE="$REPORTS_DIR/pack-rules-not-run.tsv"
+        : > "$NOT_RUN_FILE"
+        NOT_RUN_KNOWN=true
+        while IFS= read -r bundle || [ -n "$bundle" ]; do
+          [ -z "$bundle" ] && continue
+          if ! PACK_JSON=$(assay evidence lint --format json --fail-on none --pack "$PACKS" "$bundle" 2>/dev/null) \
+            || ! echo "$PACK_JSON" | jq -e 'has("skipped_rules") and (.skipped_rules | type == "array")' >/dev/null 2>&1; then
+            NOT_RUN_KNOWN=false
+            continue
+          fi
+          # Rule ids and reasons are pack-controlled text: one line each, no control characters.
+          echo "$PACK_JSON" | jq -r '.skipped_rules[]
+            | [(.rule_id // "" | tostring), (.reason // "" | tostring)]
+            | map(gsub("[[:cntrl:]]+"; " "))
+            | join("\t")' >> "$NOT_RUN_FILE"
+        done < "$BUNDLES_FILE"
+        if [ "$NOT_RUN_KNOWN" = "true" ]; then
+          sort -u -o "$NOT_RUN_FILE" "$NOT_RUN_FILE"
+          NOT_RUN_COUNT=$(cut -f1 "$NOT_RUN_FILE" | sort -u | grep -c . || true)
+          while IFS=$'\t' read -r rule reason || [ -n "$rule" ]; do
+            [ -z "$rule" ] && continue
+            msg="Pack rule $rule was not run: $reason. It produced no findings."
+            echo "::warning title=Pack rule not run::${msg//'%'/%25}"
+          done < "$NOT_RUN_FILE"
+          echo "pack_rules_not_run=$NOT_RUN_COUNT" >> $GITHUB_OUTPUT
+        else
+          : > "$NOT_RUN_FILE"
+          echo "pack_rules_not_run=" >> $GITHUB_OUTPUT
+        fi
+        echo "pack_rules_not_run_file=$NOT_RUN_FILE" >> $GITHUB_OUTPUT
+
         if [ "$FAIL_ON" != "none" ]; then
           PACK_GATE_HITS=0
           while IFS= read -r bundle || [ -n "$bundle" ]; do
@@ -1387,6 +1425,8 @@ runs:
         PACK_STATUS: ${{ steps.pack-lint.outputs.pack_status }}
         PACK_ERROR_KIND: ${{ steps.pack-lint.outputs.pack_error_kind }}
         PACK_DISCLAIMER: ${{ steps.pack-lint.outputs.pack_disclaimer }}
+        PACK_RULES_NOT_RUN: ${{ steps.pack-lint.outputs.pack_rules_not_run }}
+        PACK_RULES_NOT_RUN_FILE: ${{ steps.pack-lint.outputs.pack_rules_not_run_file }}
         ATTESTATION_ID: ${{ steps.export-attestation.outputs.attestation_id }}
         ATTESTATION_URL: ${{ steps.export-attestation.outputs.attestation_url }}
         ATTEST_ENABLED: ${{ inputs.attest }}
@@ -1418,6 +1458,22 @@ runs:
             fi
             if [ -n "$PACK_ERROR_KIND" ]; then
               echo "- Error kind: \`$PACK_ERROR_KIND\`"
+            fi
+            # A rule that was not run has no finding, so say it here. An empty count means the CLI
+            # did not report the list, which is not the same as an empty list.
+            if [ "$PACK_STATUS" = "success" ]; then
+              if [ -z "${PACK_RULES_NOT_RUN:-}" ]; then
+                echo "- Rules not run: not reported by this CLI version"
+              else
+                echo "- Rules not run: $PACK_RULES_NOT_RUN"
+                if [ "$PACK_RULES_NOT_RUN" != "0" ] && [ -f "${PACK_RULES_NOT_RUN_FILE:-}" ]; then
+                  while IFS=$'\t' read -r rule reason || [ -n "$rule" ]; do
+                    [ -z "$rule" ] && continue
+                    echo "  - \`${rule//\`/}\`: ${reason//[\`<>|]/ }"
+                  done < "$PACK_RULES_NOT_RUN_FILE"
+                  echo "  - A rule that was not run produced no findings. It did not pass."
+                fi
+              fi
             fi
 
             # MANDATORY: Display disclaimer if present

@@ -288,6 +288,7 @@ for usage, guardrails, and the feedback path.
 | `findings_error` | Count of error-level findings |
 | `findings_warn` | Count of warning-level findings |
 | `findings_info` | Count of info-level findings. Empty when the CLI report carries no info count |
+| `pack_rules_not_run` | Count of pack rules the CLI reports it did not run. Empty when the CLI does not report them; a rule that was not run produced no findings and did not pass |
 | `sarif_path` | Path to generated SARIF |
 | `diff_summary` | One-line evidence summary |
 | `reports_dir` | Path to the reports directory before upload |
