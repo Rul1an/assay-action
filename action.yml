@@ -209,7 +209,7 @@ outputs:
     description: 'Count of new findings vs baseline'
     value: ${{ steps.baseline-diff.outputs.new_findings || '0' }}
   baseline_found:
-    description: 'true if a baseline report was available for comparison; empty when no comparison ran'
+    description: 'true if the run was compared with a baseline report; false if a baseline was restored without one; empty when the comparison step did not run'
     value: ${{ steps.baseline-diff.outputs.baseline_found }}
   reports_dir:
     description: 'Path to reports directory (for artifact upload)'
@@ -900,16 +900,19 @@ runs:
           exit 0
         fi
 
-        echo "baseline_found=true" >> $GITHUB_OUTPUT
-
         BASELINE_SARIF=".assay-baseline/lint.sarif"
         CURRENT_SARIF="$REPORTS_DIR/lint.sarif"
 
+        # baseline_found says a comparison was made. A restored directory without the report is
+        # not one, and "true" with zero new findings would read as a clean comparison.
         if [ ! -f "$BASELINE_SARIF" ] || [ ! -f "$CURRENT_SARIF" ]; then
+          echo "baseline_found=false" >> $GITHUB_OUTPUT
           echo "new_findings=0" >> $GITHUB_OUTPUT
           echo "::notice::Baseline or current SARIF not found, skipping diff"
           exit 0
         fi
+
+        echo "baseline_found=true" >> $GITHUB_OUTPUT
 
         # Extract fingerprints from baseline
         BASELINE_FPS=$(jq -r '.runs[0].results // [] | .[].partialFingerprints["assayLintFingerprint/v1"] // empty' "$BASELINE_SARIF" 2>/dev/null | sort -u || true)
@@ -1102,14 +1105,19 @@ runs:
             continue
           fi
           # Rule ids and reasons are pack-controlled text: one line each, no control characters.
+          # A rule without an id is still a rule that did not run, so it keeps a line.
           echo "$PACK_JSON" | jq -r '.skipped_rules[]
             | [(.rule_id // "" | tostring), (.reason // "" | tostring)]
             | map(gsub("[[:cntrl:]]+"; " "))
+            | (if .[0] == "" then ["(unnamed rule)", .[1]] else . end)
             | join("\t")' >> "$NOT_RUN_FILE"
         done < "$BUNDLES_FILE"
         if [ "$NOT_RUN_KNOWN" = "true" ]; then
-          sort -u -o "$NOT_RUN_FILE" "$NOT_RUN_FILE"
-          NOT_RUN_COUNT=$(cut -f1 "$NOT_RUN_FILE" | sort -u | grep -c . || true)
+          # One line per rule id: a rule that several bundles report is one rule, named once.
+          # Rules without an id cannot be told apart by id, so each distinct line stays.
+          sort -u "$NOT_RUN_FILE" | awk -F'\t' '$1 == "(unnamed rule)" || !seen[$1]++' > "$NOT_RUN_FILE.tmp"
+          mv "$NOT_RUN_FILE.tmp" "$NOT_RUN_FILE"
+          NOT_RUN_COUNT=$(grep -c . "$NOT_RUN_FILE" || true)
           while IFS=$'\t' read -r rule reason || [ -n "$rule" ]; do
             [ -z "$rule" ] && continue
             msg="Pack rule $rule was not run: $reason. It produced no findings."
@@ -1460,10 +1468,11 @@ runs:
               echo "- Error kind: \`$PACK_ERROR_KIND\`"
             fi
             # A rule that was not run has no finding, so say it here. An empty count means the CLI
-            # did not report the list, which is not the same as an empty list.
+            # gave no list (an older CLI, or a report that could not be read), which is not the
+            # same as an empty list.
             if [ "$PACK_STATUS" = "success" ]; then
               if [ -z "${PACK_RULES_NOT_RUN:-}" ]; then
-                echo "- Rules not run: not reported by this CLI version"
+                echo "- Rules not run: not reported by the CLI"
               else
                 echo "- Rules not run: $PACK_RULES_NOT_RUN"
                 if [ "$PACK_RULES_NOT_RUN" != "0" ] && [ -f "${PACK_RULES_NOT_RUN_FILE:-}" ]; then

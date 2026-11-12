@@ -419,13 +419,109 @@ CLI_DIR="$WORK/notrun-silent" run_job not-run-silent none "./not-run-pack.yaml" 
     fail "not run: a CLI without the list is published as '$got'"
   fi
   silent=$(pack_summary "" "")
-  grep -q '^- Rules not run: not reported by this CLI version$' <<<"$silent" \
+  grep -q '^- Rules not run: not reported by the CLI$' <<<"$silent" \
     && pass "not run: the job summary says the CLI does not report the list" \
     || fail "not run: the job summary is silent about a CLI that does not report the list"
 }
 none=$(pack_summary "0" "")
 grep -q '^- Rules not run: 0$' <<<"$none" && pass "not run: a reported empty list is shown as 0 (control)" \
   || fail "not run: a reported empty list is not shown as 0"
+
+# More shapes of the CLI's answer. Each wrapper is the real CLI with its pack JSON report changed by one jq
+# program ($b is the bundle's file name), or failing outright.
+notrun_wrapper() { # <name> <jq program, or "fail">
+  mkdir -p "$WORK/$1"
+  local answer
+  if [[ "$2" == "fail" ]]; then
+    answer='exit 7'
+  else
+    printf '%s\n' "$2" > "$WORK/$1/program.jq"
+    answer="out=\$(\"$ASSAY_BIN_DIR/assay\" \"\$@\"); code=\$?
+  printf '%s' \"\$out\" | jq --arg b \"\$(basename \"\${@: -1}\")\" -f \"$WORK/$1/program.jq\"
+  exit \$code"
+  fi
+  cat > "$WORK/$1/assay" <<SH
+#!/usr/bin/env bash
+if [[ " \$* " == *" --format json "* && " \$* " == *" --pack "* ]]; then
+  $answer
+fi
+exec "$ASSAY_BIN_DIR/assay" "\$@"
+SH
+  chmod +x "$WORK/$1/assay"
+}
+not_run_count() { output_of "$WS/out.pack" pack_rules_not_run || true; }
+annotations() { grep -c '^::warning title=Pack rule not run::' "$WS/pack.log" || true; }
+
+# One bundle answers and one does not: the total is unknown, and a partial count would read as complete.
+# shellcheck disable=SC2016 # $b is a jq variable.
+notrun_wrapper notrun-mixed 'if $b == "warning.tar.gz" then del(.skipped_rules) else .skipped_rules = [{"rule_id": "p@1:R1", "reason": "why"}] end'
+CLI_DIR="$WORK/notrun-mixed" run_job not-run-mixed none "./not-run-pack.yaml" clean.tar.gz warning.tar.gz && {
+  if grep -q '^pack_rules_not_run=$' "$WS/out.pack" && [[ "$(annotations)" == "0" ]]; then
+    pass "not run: one bundle without the list leaves the total empty and names no rule"
+  else
+    fail "not run: a partial list is published as '$(not_run_count)' with $(annotations) annotation(s)"
+  fi
+}
+# The same rule in two bundles, with two reasons: one rule, named once.
+# shellcheck disable=SC2016
+notrun_wrapper notrun-same '.skipped_rules = [{"rule_id": "p@1:R1", "reason": ("why in " + $b)}]'
+CLI_DIR="$WORK/notrun-same" run_job not-run-same none "./not-run-pack.yaml" clean.tar.gz warning.tar.gz && {
+  if [[ "$(not_run_count)" == "1" && "$(annotations)" == "1" ]]; then
+    pass "not run: a rule that two bundles report is counted once and named once"
+  else
+    fail "not run: one rule in two bundles is published as '$(not_run_count)' with $(annotations) annotation(s)"
+  fi
+}
+# The JSON call fails: there is no list, which is not an empty list.
+notrun_wrapper notrun-fail fail
+CLI_DIR="$WORK/notrun-fail" run_job not-run-fail none "./not-run-pack.yaml" clean.tar.gz && {
+  if grep -q '^pack_rules_not_run=$' "$WS/out.pack" && [[ "$(cat "$WS/pack.code")" == "0" ]]; then
+    pass "not run: a failed report call leaves the count empty and does not fail the step"
+  else
+    fail "not run: a failed report call gives '$(not_run_count)', pack step exit $(cat "$WS/pack.code")"
+  fi
+}
+# A list that is not a list.
+for shape in null '"all"' '{}'; do
+  name="notrun-shape-$(printf '%s' "$shape" | tr -c 'a-z' '_')"
+  notrun_wrapper "$name" ".skipped_rules = $shape"
+  CLI_DIR="$WORK/$name" run_job "$name" none "./not-run-pack.yaml" clean.tar.gz && {
+    if grep -q '^pack_rules_not_run=$' "$WS/out.pack" && [[ "$(cat "$WS/pack.code")" == "0" ]]; then
+      pass "not run: skipped_rules = $shape leaves the count empty and does not fail the step"
+    else
+      fail "not run: skipped_rules = $shape gives '$(not_run_count)', pack step exit $(cat "$WS/pack.code")"
+    fi
+  }
+done
+# A rule without an id is still a rule that did not run: it keeps its line, and its reason stays the reason.
+notrun_wrapper notrun-noid '.skipped_rules = [{"rule_id": "", "reason": "no id given"}, {"reason": "id missing"}]'
+CLI_DIR="$WORK/notrun-noid" run_job not-run-noid none "./not-run-pack.yaml" clean.tar.gz && {
+  if grep -Fq 'Pack rule (unnamed rule) was not run: no id given.' "$WS/pack.log" \
+    && grep -Fq 'Pack rule (unnamed rule) was not run: id missing.' "$WS/pack.log" \
+    && ! grep -q 'Pack rule no id given' "$WS/pack.log" && [[ "$(not_run_count)" == "2" ]]; then
+    pass "not run: two rules without an id are both counted and named as unnamed, each with its reason"
+  else
+    fail "not run: a rule without an id is misread (count '$(not_run_count)'): $(grep -c 'Pack rule no id given' "$WS/pack.log" || true) annotation(s) take the reason for the id"
+  fi
+}
+
+# baseline_found says that a comparison was made. A restored directory without the baseline report is not one.
+step_script baseline-diff > "$WORK/baseline-diff.sh"
+baseline_found() { # <with baseline report: yes|no>; prints the output value
+  local ws="$WORK/baseline-$1-$RANDOM"
+  mkdir -p "$ws/.assay-baseline" "$ws/reports"
+  echo '{"runs":[{"results":[]}]}' > "$ws/reports/lint.sarif"
+  [[ "$1" == "yes" ]] && echo '{"runs":[{"results":[]}]}' > "$ws/.assay-baseline/lint.sarif"
+  : > "$ws/out"
+  (cd "$ws" && env -i PATH="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" GITHUB_OUTPUT="$ws/out" \
+    REPORTS_DIR="$ws/reports" bash "$WORK/baseline-diff.sh") > "$ws/log" 2>&1 || true
+  output_of "$ws/out" baseline_found || true
+}
+[[ "$(baseline_found yes)" == "true" ]] && pass "baseline: a comparison with a baseline report publishes baseline_found=true (control)" \
+  || fail "baseline: a comparison with a baseline report does not publish baseline_found=true"
+[[ "$(baseline_found no)" == "false" ]] && pass "baseline: a directory without the baseline report publishes baseline_found=false" \
+  || fail "baseline: no baseline report, yet baseline_found is '$(baseline_found no)'"
+
 # shellcheck disable=SC2016 # Ruby compares a literal workflow expression.
 if out=$(ruby -ryaml -e '
   declared = YAML.safe_load_file(ARGV[0], aliases: false).fetch("outputs")

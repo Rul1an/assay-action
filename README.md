@@ -292,7 +292,7 @@ for usage, guardrails, and the feedback path.
 | `sarif_path` | Path to generated SARIF |
 | `diff_summary` | One-line evidence summary |
 | `reports_dir` | Path to the reports directory before upload |
-| `baseline_found` | `true` if a baseline report was available for comparison. Empty when no comparison ran |
+| `baseline_found` | `true` if the current run was compared with a baseline report, `false` if a baseline was restored without one. Empty when the comparison step did not run |
 | `diff_new_findings` | Count of findings present in the current run but absent from the baseline |
 
 ### Evidence state compatibility
