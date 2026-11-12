@@ -287,16 +287,12 @@ for usage, guardrails, and the feedback path.
 | `evidence_index_digest` | SHA-256 of the exact evidence-index bytes. Populated with the path whenever discovery completes. |
 | `findings_error` | Count of error-level findings |
 | `findings_warn` | Count of warning-level findings |
-| `findings_info` | Count of info-level findings |
+| `findings_info` | Count of info-level findings. Empty when the CLI report carries no info count |
 | `sarif_path` | Path to generated SARIF |
 | `diff_summary` | One-line evidence summary |
 | `reports_dir` | Path to the reports directory before upload |
-| `baseline_delta` | One-line new-finding summary versus the restored baseline |
-| `baseline_found` | `true` if a baseline report was available for comparison |
-| `baseline_new_findings` | Count of findings present in the current run but absent from the baseline |
-| `baseline_removed_findings` | Count of findings present in the baseline but absent from the current run |
-| `baseline_unchanged_findings` | Count of findings present in both the baseline and current run |
-| `baseline_diff_detail` | One-line added, removed, and unchanged finding summary versus the restored baseline |
+| `baseline_found` | `true` if a baseline report was available for comparison. Empty when no comparison ran |
+| `diff_new_findings` | Count of findings present in the current run but absent from the baseline |
 
 ### Evidence state compatibility
 

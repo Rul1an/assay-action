@@ -193,6 +193,9 @@ outputs:
   findings_warn:
     description: 'Count of warning-level findings'
     value: ${{ steps.process.outputs.findings_warn }}
+  findings_info:
+    description: 'Count of info-level findings; empty when the CLI report carries no info count'
+    value: ${{ steps.process.outputs.findings_info }}
   sarif_path:
     description: 'Path to generated SARIF file'
     value: ${{ steps.process.outputs.sarif_path }}
@@ -205,6 +208,9 @@ outputs:
   diff_new_findings:
     description: 'Count of new findings vs baseline'
     value: ${{ steps.baseline-diff.outputs.new_findings || '0' }}
+  baseline_found:
+    description: 'true if a baseline report was available for comparison; empty when no comparison ran'
+    value: ${{ steps.baseline-diff.outputs.baseline_found }}
   reports_dir:
     description: 'Path to reports directory (for artifact upload)'
     value: ${{ steps.process.outputs.reports_dir }}
@@ -561,6 +567,8 @@ runs:
         # Lint all bundles (one at a time, aggregate results)
         TOTAL_ERRORS=0
         TOTAL_WARNS=0
+        TOTAL_INFOS=0
+        INFOS_KNOWN=true
         GATE_HITS=0
         echo '{"findings":[]}' > "$REPORTS_DIR/lint.json"
 
@@ -603,6 +611,18 @@ runs:
           TOTAL_ERRORS=$((TOTAL_ERRORS + BUNDLE_ERRORS))
           TOTAL_WARNS=$((TOTAL_WARNS + BUNDLE_WARNS))
 
+          # The info count is the CLI's too. A summary without one leaves the total unknown; it is
+          # never filled in from the findings or with a zero.
+          BUNDLE_INFOS=$(echo "$LINT_JSON" | jq -r '
+            if .summary != null then (.summary.infos // "")
+            elif ((.findings // []) | length) == 0 then 0
+            else "" end' 2>/dev/null || echo "")
+          if [[ "$BUNDLE_INFOS" =~ ^[0-9]+$ ]]; then
+            TOTAL_INFOS=$((TOTAL_INFOS + BUNDLE_INFOS))
+          else
+            INFOS_KNOWN=false
+          fi
+
           # Append findings to aggregate
           echo "$LINT_JSON" | jq '.findings // []' >> "$TEMP_DIR/all-findings.json" 2>/dev/null || true
 
@@ -632,6 +652,11 @@ runs:
 
         echo "findings_error=$ERRORS" >> $GITHUB_OUTPUT
         echo "findings_warn=$WARNS" >> $GITHUB_OUTPUT
+        if [ "$INFOS_KNOWN" = "true" ]; then
+          echo "findings_info=$TOTAL_INFOS" >> $GITHUB_OUTPUT
+        else
+          echo "findings_info=" >> $GITHUB_OUTPUT
+        fi
 
         echo "diff_summary=Verified: $VERIFIED, Errors: $ERRORS, Warnings: $WARNS" >> $GITHUB_OUTPUT
 

@@ -107,12 +107,12 @@ run_job() { # <name> <fail_on> <packs or ""> <bundle>...
   fi
 }
 
-# The oracle: what the CLI itself reports for one bundle, as "<errors> <warnings>".
+# The oracle: what the CLI itself reports for one bundle, as "<errors> <warnings> <infos>".
 cli_counts() { # <fail_on> <bundle path> [--pack <packs>]
   local fail_on=$1 bundle=$2
   shift 2
   (cd "$(dirname "$bundle")/../.." && assay_cli evidence lint --format json --fail-on "$fail_on" "$@" "$bundle" 2>/dev/null) \
-    | jq -r '"\(.summary.errors) \(.summary.warnings)"'
+    | jq -r '"\(.summary.errors) \(.summary.warnings) \(.summary.infos)"'
 }
 
 # Leg 1: the counts the action publishes equal the CLI's summary, summed over bundles.
@@ -120,22 +120,47 @@ counts_case() { # <name> <fail_on> <bundle>...
   local name=$1 fail_on=$2
   shift 2
   run_job "$name" "$fail_on" "" "$@" || return 0
-  local want_errors=0 want_warns=0 bundle counts
+  local want_errors=0 want_warns=0 want_infos=0 bundle counts e w i
   for bundle in "$@"; do
     counts=$(cli_counts none "$WS/ws/.assay/evidence/$bundle")
-    [[ "$counts" =~ ^[0-9]+\ [0-9]+$ ]] || { fail "$name: the oracle gave no counts for $bundle ('$counts')"; return 0; }
-    want_errors=$((want_errors + ${counts% *}))
-    want_warns=$((want_warns + ${counts#* }))
+    [[ "$counts" =~ ^[0-9]+\ [0-9]+\ [0-9]+$ ]] || { fail "$name: the oracle gave no counts for $bundle ('$counts')"; return 0; }
+    read -r e w i <<<"$counts"
+    want_errors=$((want_errors + e))
+    want_warns=$((want_warns + w))
+    want_infos=$((want_infos + i))
   done
-  local got_errors got_warns
+  local got_errors got_warns got_infos
   got_errors=$(output_of "$WS/out.process" findings_error)
   got_warns=$(output_of "$WS/out.process" findings_warn)
+  got_infos=$(output_of "$WS/out.process" findings_info || true)
   if [[ "$got_errors" == "$want_errors" && "$got_warns" == "$want_warns" ]]; then
     pass "$name: findings_error=$got_errors findings_warn=$got_warns equal the CLI summary"
   else
     fail "$name: action says errors=$got_errors warnings=$got_warns, the CLI says errors=$want_errors warnings=$want_warns"
   fi
+  if [[ "$got_infos" == "$want_infos" ]]; then
+    pass "$name: findings_info=$got_infos equals the CLI summary"
+  else
+    fail "$name: action says infos='$got_infos', the CLI says infos=$want_infos"
+  fi
 }
+
+# Every output the README documents is one the action declares, bound to the step that computes it.
+# shellcheck disable=SC2016 # Ruby compares a literal workflow expression.
+if out=$(ruby -ryaml -e '
+  declared = YAML.safe_load_file(ARGV[0], aliases: false).fetch("outputs")
+  table = File.read(ARGV[1], encoding: "UTF-8").split(/^## Outputs$/, 2).fetch(1).split(/^## /, 2).first
+  documented = table.scan(/^\| `([a-z_]+)` \|/).flatten
+  abort("README documents no outputs") if documented.empty?
+  missing = documented - declared.keys
+  abort("README documents outputs the action does not declare: #{missing.join(", ")}") unless missing.empty?
+  want = "${{ steps.process.outputs.findings_info }}"
+  abort("findings_info must be #{want}") unless declared.dig("findings_info", "value") == want
+' "$ACTION" "$REPO_ROOT/README.md" 2>&1); then
+  pass "outputs: every output in the README is declared by the action"
+else
+  fail "outputs: $out"
+fi
 
 echo "CLI under test: $(assay_cli --version)"
 
