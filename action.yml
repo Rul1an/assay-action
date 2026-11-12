@@ -757,11 +757,16 @@ runs:
       shell: bash
       env:
         UPLOAD_OUTCOME: ${{ steps.upload-sarif.outcome }}
+        SARIF_READY: ${{ steps.sarif-category.outputs.ready }}
         IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
       run: |
         if [ "$UPLOAD_OUTCOME" = "success" ]; then
           echo "uploaded=true" >> $GITHUB_OUTPUT
           echo "SARIF uploaded successfully to GitHub Code Scanning"
+        elif [ "${SARIF_READY:-}" != "true" ]; then
+          # The review step stopped before it wrote a SARIF file: there was nothing to upload.
+          echo "uploaded=false" >> $GITHUB_OUTPUT
+          echo "::notice::No SARIF file was written, so nothing was uploaded to code scanning."
         elif [ "$IS_FORK_PR" = "true" ]; then
           echo "uploaded=false" >> $GITHUB_OUTPUT
           echo "::notice::SARIF upload skipped for fork PR (no security-events:write permission). Results are available in artifacts."
@@ -1216,11 +1221,17 @@ runs:
           echo "::error::No pack SARIF to prepare for code scanning"
           exit 2
         fi
+        # A pack rule id is "<pack>@<version>:<rule>", and each report names the packs the CLI
+        # applied. Without that list the action cannot tell pack findings from others, and an
+        # empty upload would close every open pack alert: write nothing and say so.
+        PACK_PREFIXES=$(jq -s -c '[.[].runs[]?.tool.driver.properties.assayPacks[]? | "\(.name)@\(.version):"] | unique' "${PACK_FILES[@]}")
+        if [ "$PACK_PREFIXES" = "[]" ]; then
+          echo "::warning::The pack reports do not name the packs that were applied; pack findings were not sent to code scanning."
+          exit 0
+        fi
         jq -s -f "$GITHUB_ACTION_PATH/scripts/sarif_single_run.jq" "${PACK_FILES[@]}" \
-          | jq --arg id "${CATEGORY%/}/pack/" '
-              # A pack rule id is "<pack>@<version>:<rule>", and the CLI names the packs it applied.
-              ([.runs[0].tool.driver.properties.assayPacks[]? | "\(.name)@\(.version):"]) as $packs
-              | def of_applied_pack: (. // "") as $rule | any($packs[]; . as $prefix | $rule | startswith($prefix));
+          | jq --arg id "${CATEGORY%/}/pack/" --argjson packs "$PACK_PREFIXES" '
+              def of_applied_pack: (. // "") as $rule | any($packs[]; . as $prefix | $rule | startswith($prefix));
               .runs[0].results |= map(select(.ruleId | of_applied_pack))
               | .runs[0].tool.driver.rules |= map(select(.id | of_applied_pack))
               | .runs[0].automationDetails = {id: $id}' \

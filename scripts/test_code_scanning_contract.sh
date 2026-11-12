@@ -225,9 +225,46 @@ if step_script pack-sarif > "$WORK/pack-sarif-only.sh" 2>/dev/null; then
   else
     fail "pack: the pack SARIF step failed on a mixed report"
   fi
+  # A report that does not name the packs it applied: the action cannot tell pack findings from others, and an
+  # empty upload would close every open pack alert. It must not write or announce a file.
+  mkdir -p "$WORK/unnamed"
+  jq 'del(.runs[0].tool.driver.properties.assayPacks)' "$WORK/mixed/pack-lint-mixed.sarif" > "$WORK/unnamed/pack-lint-x.sarif"
+  env -i PATH="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" GITHUB_ACTION_PATH="$REPO_ROOT" \
+    GITHUB_OUTPUT="$WORK/unnamed/out" CATEGORY="cat" REPORTS_DIR="$WORK/unnamed" bash "$WORK/pack-sarif-only.sh" \
+    > "$WORK/unnamed/log" 2>&1 || true
+  if [[ ! -e "$WORK/unnamed/pack-code-scanning.sarif" ]] && ! grep -q '^ready=true$' "$WORK/unnamed/out" 2>/dev/null \
+    && grep -q '::warning::' "$WORK/unnamed/log"; then
+    pass "pack: a report that names no applied pack is not uploaded as an empty analysis, and says so"
+  else
+    fail "pack: a report that names no applied pack still produced an upload"
+  fi
+  # Two bundles whose reports name different packs: both packs' results are kept.
+  mkdir -p "$WORK/twopacks"
+  jq '.runs[0].tool.driver.properties.assayPacks = [{"name": "another-pack", "version": "2.0.0"}]' \
+    "$WORK/mixed/pack-lint-mixed.sarif" > "$WORK/twopacks/pack-lint-b.sarif"
+  cp "$WORK/mixed/pack-lint-mixed.sarif" "$WORK/twopacks/pack-lint-a.sarif"
+  env -i PATH="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" GITHUB_ACTION_PATH="$REPO_ROOT" \
+    GITHUB_OUTPUT="$WORK/twopacks/out" CATEGORY="cat" REPORTS_DIR="$WORK/twopacks" bash "$WORK/pack-sarif-only.sh" \
+    > "$WORK/twopacks/log" 2>&1 || true
+  check "pack: packs named by any bundle's report are kept, not only the first bundle's" test \
+    "$(jq -c '[.runs[0].results[].ruleId] | unique' "$WORK/twopacks/pack-code-scanning.sarif" 2>/dev/null)" = '["another-pack@2.0.0:X-1","cli-verdict-fixture@1.0.0:CLV-001"]'
 else
   fail "pack: the action has no pack-sarif step"
 fi
+
+# The status step after a process step that wrote no SARIF: nothing failed to upload, so it must not say so.
+step_script sarif-status > "$WORK/status.sh"
+: > "$WORK/status.out"
+status_log="$(env -i PATH="/usr/bin:/bin" GITHUB_OUTPUT="$WORK/status.out" UPLOAD_OUTCOME=skipped IS_FORK_PR=false \
+  SARIF_READY="" bash "$WORK/status.sh" 2>&1 || true)"
+if grep -q '^uploaded=false$' "$WORK/status.out" && ! grep -qi 'upload failed' <<<"$status_log"; then
+  pass "status: an upload skipped for lack of a SARIF file is not reported as a failed upload"
+else
+  fail "status: a skipped upload is reported as a failed one ($status_log)"
+fi
+status_log="$(env -i PATH="/usr/bin:/bin" GITHUB_OUTPUT="$WORK/status.out" UPLOAD_OUTCOME=failure IS_FORK_PR=false \
+  SARIF_READY="true" bash "$WORK/status.sh" 2>&1 || true)"
+check "status: a failed upload is still reported as one (control)" grep -qi 'upload failed' <<<"$status_log"
 
 # ---------------------------------------------------------------------------------------------------------------
 # The merge itself refuses what it cannot merge honestly
