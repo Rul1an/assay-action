@@ -172,6 +172,7 @@ fi
 if run_job user-category "team/evidence" "" b-warn.tar.gz=warning.tar.gz; then
   got_id="$(jq -r '[.runs[].automationDetails.id] | join(",")' "$REPORTS/lint.sarif")"
   check "category: a category the user sets is the one the run carries" test "$got_id" = "team/evidence/"
+  check "category: the step says the file is ready to upload" test "$(output_of "$WS/out.sarif-category" ready)" = "true"
 fi
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -180,7 +181,7 @@ fi
 
 if run_job pack "" "./failing-pack.yaml" a-clean.tar.gz=clean.tar.gz b-warn.tar.gz=warning.tar.gz; then
   pack="$REPORTS/pack-code-scanning.sarif"
-  want="$(for b in a-clean b-warn; do cli_results ".assay/evidence/$b.tar.gz" --pack ./failing-pack.yaml; done | grep '@' || true)"
+  want="$(for b in a-clean b-warn; do cli_results ".assay/evidence/$b.tar.gz" --pack ./failing-pack.yaml; done | grep '^cli-verdict-fixture@1\.0\.0:' || true)"
   if [[ "$(grep -c . <<<"$want")" -ge 2 ]]; then
     pass "pack: the CLI reports a pack finding for each of two bundles (control)"
   else
@@ -209,15 +210,18 @@ fi
 if step_script pack-sarif > "$WORK/pack-sarif-only.sh" 2>/dev/null; then
   mkdir -p "$WORK/mixed"
   (cd "$FIXTURES" && assay_cli evidence lint --format sarif --fail-on none --pack ./failing-pack.yaml warning.tar.gz 2>/dev/null) \
-    | jq '.runs[0].results += [{"ruleId": "ASSAY-W001", "level": "warning", "message": {"text": "built-in"}}]' \
+    | jq '.runs[0].results += [
+        {"ruleId": "ASSAY-W001", "level": "warning", "message": {"text": "built-in"}},
+        {"ruleId": "another-pack@2.0.0:X-1", "level": "warning", "message": {"text": "a rule of a pack that was not applied"}}]
+        | .runs[0].tool.driver.rules += [{"id": "another-pack@2.0.0:X-1"}]' \
     > "$WORK/mixed/pack-lint-mixed.sarif"
   if env -i PATH="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" GITHUB_ACTION_PATH="$REPO_ROOT" \
     GITHUB_OUTPUT="$WORK/mixed/out" CATEGORY="cat" REPORTS_DIR="$WORK/mixed" bash "$WORK/pack-sarif-only.sh" \
     > "$WORK/mixed/log" 2>&1; then
-    check "pack: a built-in rule's result stays out of the pack file" test \
+    check "pack: only results of the applied pack's rules are in the pack file" test \
       "$(jq -c '[.runs[0].results[].ruleId]' "$WORK/mixed/pack-code-scanning.sarif")" = '["cli-verdict-fixture@1.0.0:CLV-001"]'
-    check "pack: a built-in rule stays out of the pack file's rule list" test \
-      "$(jq '[.runs[0].tool.driver.rules[].id | select(contains("@") | not)] | length' "$WORK/mixed/pack-code-scanning.sarif")" = "0"
+    check "pack: only the applied pack's rules are in the pack file's rule list" test \
+      "$(jq -c '[.runs[0].tool.driver.rules[].id]' "$WORK/mixed/pack-code-scanning.sarif")" = '["cli-verdict-fixture@1.0.0:CLV-001"]'
   else
     fail "pack: the pack SARIF step failed on a mixed report"
   fi
@@ -250,6 +254,18 @@ else
     "$(jq -c '[(.runs | length), (.runs[0].results | length), (.runs[0].tool.driver.rules | length)]' <<<"$merged")" = "[1,2,1]"
   check "merge: a merged result keeps its rule id and loses its rule position" test \
     "$(jq -c '[.runs[0].results[] | [.ruleId, has("ruleIndex")]] | unique' <<<"$merged")" = '[["R1",false]]'
+  note='{"descriptor":{"id":"N1"},"message":{"text":"rule not run"},"associatedRule":{"id":"R1","index":3}}'
+  with_inv="$(jq -c --argjson note "$note" '.runs[0].invocations = [{"executionSuccessful": true, "workingDirectory": {"uri": "file:///w"}, "toolExecutionNotifications": [$note]}]' <<<"$one")"
+  failed_inv="$(jq -c '.runs[0].invocations = [{"executionSuccessful": false}]' <<<"$one")"
+  merged="$(printf '%s\n%s\n' "$with_inv" "$with_inv" | jq -s -c -f "$MERGE")"
+  check "merge: every run's execution notifications are carried, without a rule position" test \
+    "$(jq -c '[.runs[0].invocations | length, (.[0].toolExecutionNotifications | length), ([.[0].toolExecutionNotifications[].associatedRule | has("index")] | any)]' <<<"$merged")" = "[1,2,false]"
+  check "merge: the first invocation keeps its other fields" test \
+    "$(jq -r '.runs[0].invocations[0].workingDirectory.uri' <<<"$merged")" = "file:///w"
+  check "merge: one failed execution makes the merged run a failed one" test \
+    "$(printf '%s\n%s\n' "$with_inv" "$failed_inv" | jq -s -f "$MERGE" | jq '.runs[0].invocations[0].executionSuccessful')" = "false"
+  check "merge: runs without invocations get none invented" test \
+    "$(printf '%s\n%s\n' "$one" "$one" | jq -s -f "$MERGE" | jq '.runs[0] | has("invocations")')" = "false"
 fi
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -284,6 +300,14 @@ if out=$(ruby -ryaml -e '
   [lint, pack].each do |step|
     abort("an upload must not set continue-on-error") if step.key?("continue-on-error")
   end
+  category = steps.find { |s| s["id"] == "sarif-category" }
+  # A job that fails on its findings is the job whose findings must reach code scanning.
+  [["the category step", category["if"].to_s], ["the lint upload", lint["if"].to_s]].each do |label, expr|
+    abort("#{label} must also run after a process step that failed on its gate") unless
+      expr.include?("steps.process.outcome == \x27failure\x27")
+  end
+  abort("the lint upload must wait for a stamped lint.sarif") unless
+    lint["if"].to_s.include?("steps.sarif-category.outputs.ready == \x27true\x27")
   abort("the category step must receive the reports directory") unless
     steps.find { |s| s["id"] == "sarif-category" }.dig("env", "REPORTS_DIR") == "${{ steps.process.outputs.reports_dir }}"
 ' "$ACTION" 2>&1); then

@@ -699,7 +699,9 @@ runs:
 
     - name: Generate SARIF category
       id: sarif-category
-      if: inputs.sarif == 'true' && steps.discover.outputs.found == 'true'
+      # Also after a process step that failed on its gate: a job that fails on its findings is the
+      # job whose findings must reach code scanning.
+      if: inputs.sarif == 'true' && steps.discover.outputs.found == 'true' && (success() || steps.process.outcome == 'failure')
       shell: bash
       env:
         USER_CATEGORY: ${{ inputs.category }}
@@ -730,6 +732,7 @@ runs:
           jq --arg id "${CATEGORY%/}/" '.runs[].automationDetails = {id: $id}' \
             "$REPORTS_DIR/lint.sarif" > "$REPORTS_DIR/lint.sarif.tmp"
           mv "$REPORTS_DIR/lint.sarif.tmp" "$REPORTS_DIR/lint.sarif"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
         fi
 
     - name: Upload SARIF to GitHub Security
@@ -738,6 +741,8 @@ runs:
       if: |
         inputs.sarif == 'true' &&
         steps.discover.outputs.found == 'true' &&
+        steps.sarif-category.outputs.ready == 'true' &&
+        (success() || steps.process.outcome == 'failure') &&
         (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
       # Pin to SHA for supply-chain security (verified: v4.35.4, 2026-05-11)
       uses: github/codeql-action/upload-sarif@68bde559dea0fdcac2102bfdf6230c5f70eb485e # v4.35.4
@@ -747,7 +752,8 @@ runs:
 
     - name: Check SARIF upload status
       id: sarif-status
-      if: inputs.sarif == 'true' && steps.discover.outputs.found == 'true'
+      # With the upload: also after a process step that failed on its gate.
+      if: inputs.sarif == 'true' && steps.discover.outputs.found == 'true' && (success() || steps.process.outcome == 'failure')
       shell: bash
       env:
         UPLOAD_OUTCOME: ${{ steps.upload-sarif.outcome }}
@@ -1201,7 +1207,7 @@ runs:
         REPORTS_DIR: ${{ steps.process.outputs.reports_dir }}
       run: |
         set -euo pipefail
-        # One run, the pack rules' results only (the built-in rules are in lint.sarif already), under
+        # One run, the applied packs' results only (the built-in rules are in lint.sarif already), under
         # its own category: code scanning takes one run per tool and category, and lint.sarif holds
         # the action's. A run without results is still written and uploaded; that is how an alert
         # for a finding that is gone gets closed.
@@ -1212,8 +1218,11 @@ runs:
         fi
         jq -s -f "$GITHUB_ACTION_PATH/scripts/sarif_single_run.jq" "${PACK_FILES[@]}" \
           | jq --arg id "${CATEGORY%/}/pack/" '
-              .runs[0].results |= map(select((.ruleId // "") | contains("@")))
-              | .runs[0].tool.driver.rules |= map(select((.id // "") | contains("@")))
+              # A pack rule id is "<pack>@<version>:<rule>", and the CLI names the packs it applied.
+              ([.runs[0].tool.driver.properties.assayPacks[]? | "\(.name)@\(.version):"]) as $packs
+              | def of_applied_pack: (. // "") as $rule | any($packs[]; . as $prefix | $rule | startswith($prefix));
+              .runs[0].results |= map(select(.ruleId | of_applied_pack))
+              | .runs[0].tool.driver.rules |= map(select(.id | of_applied_pack))
               | .runs[0].automationDetails = {id: $id}' \
           > "$REPORTS_DIR/pack-code-scanning.sarif"
         echo "ready=true" >> "$GITHUB_OUTPUT"

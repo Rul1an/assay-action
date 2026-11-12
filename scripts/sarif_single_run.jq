@@ -7,6 +7,9 @@
 # once, and carries every result and every execution notification. A result must not point at a rule by position
 # after a merge, so `ruleIndex` and `associatedRule.index` are dropped; `ruleId` stays.
 #
+# Invocations become one: the first invocation with its fields, every run's notifications, and
+# `executionSuccessful` false as soon as one run says false. Runs without invocations get none.
+#
 # Refused, with a non-zero exit: no run at all, and runs of more than one tool. The category is not set here; the
 # caller owns it.
 
@@ -19,10 +22,13 @@
     $runs[0]
     | .tool.driver.rules = ([$runs[].tool.driver.rules[]?] | unique_by(.id))
     | .results = [$runs[].results[]? | del(.ruleIndex)]
-    | .invocations = [{
-        executionSuccessful: ([$runs[].invocations[]?.executionSuccessful] | all(. != false)),
-        toolExecutionNotifications:
-          [$runs[].invocations[]?.toolExecutionNotifications[]? | del(.associatedRule.index)]
-      }]
+    | ([$runs[].invocations[]?]) as $invocations
+    | if ($invocations | length) == 0 then del(.invocations)
+      else .invocations = [
+        $invocations[0]
+        | .executionSuccessful = ([$invocations[].executionSuccessful] | all(. != false))
+        | .toolExecutionNotifications =
+            [$invocations[].toolExecutionNotifications[]? | del(.associatedRule.index)]
+      ] end
     | del(.automationDetails)
   ]
