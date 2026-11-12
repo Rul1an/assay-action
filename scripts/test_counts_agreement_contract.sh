@@ -39,8 +39,12 @@ done
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-mkdir -p "$WORK/home"
+mkdir -p "$WORK/home" "$WORK/tools"
 JQ_DIR="$(dirname "$(command -v jq)")"
+# The assertion sees only the CLI directory under test plus these two tools. A directory that also holds `assay`
+# (jq's own directory, /usr/bin) would let the "missing CLI" case find one.
+ln -s "$(command -v jq)" "$WORK/tools/jq"
+ln -s "$(command -v bash)" "$WORK/tools/bash"
 
 # ---------------------------------------------------------------------------------------------------------------
 # 1. Behaviour of the assertion
@@ -49,8 +53,8 @@ JQ_DIR="$(dirname "$(command -v jq)")"
 # Runs the assertion with the given CLI directory first on PATH. Prints nothing; returns the script's exit code.
 run_assert() { # <cli dir> <errors> <warnings> <bundle>
   local code=0
-  env -i HOME="$WORK/home" PATH="$1:$JQ_DIR:/usr/bin:/bin" FINDINGS_ERROR="$2" FINDINGS_WARN="$3" \
-    bash "$ASSERT" "$4" > "$WORK/assert.log" 2>&1 || code=$?
+  env -i HOME="$WORK/home" PATH="$1:$WORK/tools" FINDINGS_ERROR="$2" FINDINGS_WARN="$3" \
+    "$WORK/tools/bash" "$ASSERT" "$4" > "$WORK/assert.log" 2>&1 || code=$?
   echo "$code"
 }
 
@@ -106,6 +110,11 @@ else
     "$(run_assert "$ASSAY_BIN_DIR" "$O_ERR" "$O_WARN" "$WORK/corrupt.tar.gz")"
 
   mkdir -p "$WORK/no-cli"
+  if env -i PATH="$WORK/no-cli:$WORK/tools" "$WORK/tools/bash" -c 'command -v assay' >/dev/null 2>&1; then
+    fail "behaviour: the PATH of the missing-CLI case still resolves an assay, so that case proves nothing"
+  else
+    pass "behaviour: the PATH of the missing-CLI case resolves no assay (control)"
+  fi
   expect_code "a missing CLI is an error, not a pass" 2 "$(run_assert "$WORK/no-cli" "$O_ERR" "$O_WARN" "$WARNING")"
 
   # A CLI whose report carries no summary: the assertion has no oracle and must say so.
@@ -124,15 +133,38 @@ fi
 # ---------------------------------------------------------------------------------------------------------------
 
 # One site: <workflow> <job> <uses of the reviewing step> <bundle argument> <required if: of both steps, or "">
+#           <required if: of the job, or "">
 # The reviewing step is found from the assertion's own env binding, so the test follows the outputs that are read.
+# Everything that can change a step from outside it is closed too: the job may carry only the keys listed below, and
+# the workflow may carry no defaults and no env that the assertion reads.
 check_site() {
-  local label=$1 workflow=$2 job=$3 uses=$4 bundle=$5 cond=$6 out
+  local label=$1 workflow=$2 job=$3 uses=$4 bundle=$5 cond=$6 job_cond=$7 out
   # shellcheck disable=SC2016 # Ruby compares literal workflow expressions.
   if out=$(ruby -ryaml -e '
-    workflow, job_id, uses, bundle, cond = ARGV
-    job = YAML.safe_load_file(workflow, aliases: false).fetch("jobs").fetch(job_id)
+    workflow, job_id, uses, bundle, cond, job_cond = ARGV
+    # A repeated key is legal YAML to this loader, which keeps the last one. Refuse it in the syntax tree.
+    walk = lambda do |node|
+      if node.is_a?(Psych::Nodes::Mapping)
+        keys = node.children.each_slice(2).map { |key, _| key.respond_to?(:value) ? key.value : nil }.compact
+        repeated = keys.find { |key| keys.count(key) > 1 }
+        abort("the workflow repeats the key #{repeated.inspect} in one mapping") if repeated
+      end
+      (node.children || []).each { |child| walk.call(child) }
+    end
+    walk.call(YAML.parse_file(workflow))
+    document = YAML.safe_load_file(workflow, aliases: false)
+    abort("the workflow sets defaults") if document.key?("defaults")
+    shadowed = (document["env"] || {}).keys & %w[BUNDLE FINDINGS_ERROR FINDINGS_WARN]
+    abort("the workflow env sets #{shadowed.join(", ")}") unless shadowed.empty?
+    job = document.fetch("jobs").fetch(job_id)
+    extra = job.keys - %w[name if runs-on timeout-minutes permissions strategy steps]
+    abort("the job has unexpected keys: #{extra.join(", ")}") unless extra.empty?
+    want_job_if = job_cond.empty? ? nil : job_cond
+    abort("the job if: must be #{want_job_if.inspect}, got #{job["if"].inspect}") unless job["if"] == want_job_if
+    timeout = job["timeout-minutes"]
+    abort("the job timeout-minutes must be a positive integer, got #{timeout.inspect}") unless
+      timeout.is_a?(Integer) && timeout.positive?
     steps = job.fetch("steps")
-    abort("job has continue-on-error") if job.key?("continue-on-error")
     want_run = "bash scripts/assert_counts_match_cli.sh #{bundle}"
     hits = steps.each_index.select { |i| steps[i]["run"].to_s.strip == want_run }
     abort("expected exactly one step running `#{want_run}`, found #{hits.length}") unless hits.length == 1
@@ -154,11 +186,15 @@ check_site() {
     abort("the reviewing step must come before the assertion") unless source < index
     review = steps[source]
     abort("the reviewing step must be `uses: #{uses}`, got #{review["uses"].inspect}") unless review["uses"] == uses
+    nearest = (0...index).select { |i| steps[i]["uses"] == uses }.last
+    abort("the counts must come from the last `uses: #{uses}` step before the assertion (#{steps[nearest]["id"]}), " \
+          "not from #{id}") unless source == nearest
     abort("the reviewing step has continue-on-error") if review.key?("continue-on-error")
     want_if = cond.empty? ? nil : cond
     abort("the assertion step if: must be #{want_if.inspect}, got #{step["if"].inspect}") unless step["if"] == want_if
     abort("the reviewing step if: must be #{want_if.inspect}, got #{review["if"].inspect}") unless
       review["if"] == want_if
+    abort("the assertion step must set BUNDLE itself") if bundle.include?("$BUNDLE") && !env.key?("BUNDLE")
     if env.key?("BUNDLE")
       abort("BUNDLE must be the sandbox bundle under runner.temp") unless
         env["BUNDLE"] == "${{ runner.temp }}/assay-coding-agent.tar.gz"
@@ -166,7 +202,7 @@ check_site() {
         review.dig("with", "sandbox-command").to_s != ""
     end
     abort("the reviewing step must gate on fail_on: error") unless review.dig("with", "fail_on") == "error"
-  ' "$workflow" "$job" "$uses" "$bundle" "$cond" 2>&1); then
+  ' "$workflow" "$job" "$uses" "$bundle" "$cond" "$job_cond" 2>&1); then
     pass "wiring: $label"
   else
     fail "wiring: $label: $out"
@@ -174,13 +210,14 @@ check_site() {
 }
 
 check_site "the required sandbox job compares the review step's counts with the CLI" \
-  "$SANITY" default-discovery-sandbox "./" ".assay/evidence/nested/sandbox.tar.gz" ""
+  "$SANITY" default-discovery-sandbox "./" ".assay/evidence/nested/sandbox.tar.gz" "" ""
 # shellcheck disable=SC2016 # "$BUNDLE" is the literal argument written in the workflow.
 check_site "the @v3 canary compares the published action's counts with the CLI" \
-  "$CANARY" assay-action-v3 "Rul1an/assay-action@v3" '"$BUNDLE"' "runner.os == 'Linux'"
+  "$CANARY" assay-action-v3 "Rul1an/assay-action@v3" '"$BUNDLE"' "runner.os == 'Linux'" ""
 # shellcheck disable=SC2016
 check_site "the candidate lane compares the tagged action's counts with the CLI" \
-  "$CANARY" assay-action-candidate "./" '"$BUNDLE"' ""
+  "$CANARY" assay-action-candidate "./" '"$BUNDLE"' "" \
+  "\${{ github.event_name == 'workflow_dispatch' && github.ref_type == 'tag' && inputs.expected_sha != '' }}"
 
 # The required sandbox job also runs the verdict contract and this contract with the CLI the action installed.
 check_runs() { # <label> <exact run line>
