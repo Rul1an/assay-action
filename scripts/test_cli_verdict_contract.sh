@@ -339,6 +339,31 @@ not_run_oracle() { # prints the number of distinct rules the CLI under test says
     .assay/evidence/clean.tar.gz 2>/dev/null) \
     | jq -r 'if has("skipped_rules") then (.skipped_rules | map(.rule_id) | unique | length) else "" end'
 }
+# The verdict of the real-CLI leg, checked on its own: an empty answer on both sides is acceptable only for a CLI
+# that has no list, a CLI that has the list must name at least one rule for the fixture pack, and a run that
+# requires the list (REQUIRE_SKIPPED_RULES=1, used with the latest CLI) refuses a CLI without one.
+verdict_case() { # <label> <expected ok|bad> <require 0|1> <want> <got> <pack exit>
+  local out
+  if ! declare -F not_run_real_verdict >/dev/null; then
+    fail "not run verdict: $1: the contract has no not_run_real_verdict"
+    return 0
+  fi
+  out=$(REQUIRE_SKIPPED_RULES="$3" not_run_real_verdict "$4" "$5" "$6")
+  if [[ "$out" == "$2:"* ]]; then
+    pass "not run verdict: $1"
+  else
+    fail "not run verdict: $1: expected $2, got '$out'"
+  fi
+}
+verdict_case "a CLI without the list and an empty output is accepted" ok 0 "" "" 0
+verdict_case "a CLI with the list and an equal count is accepted (control)" ok 0 1 1 0
+verdict_case "a CLI with the list that names no rule for the fixture pack is refused" bad 0 0 0 0
+verdict_case "a count that differs from the CLI is refused" bad 0 1 0 0
+verdict_case "an empty output for a CLI that has the list is refused" bad 0 1 "" 0
+verdict_case "a failed pack step is refused" bad 0 1 1 3
+verdict_case "a run that requires the list refuses a CLI without one" bad 1 "" "" 0
+verdict_case "a run that requires the list accepts a CLI with one (control)" ok 1 1 1 0
+
 run_job not-run-real none "./not-run-pack.yaml" clean.tar.gz && {
   want=$(not_run_oracle)
   got=$(output_of "$WS/out.pack" pack_rules_not_run || true)
