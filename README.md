@@ -288,8 +288,8 @@ With `sarif: true` the action uploads two analyses of the tool `assay-evidence-l
 | Pack | `<category>/pack` | The findings of the rules in `pack`, when `pack` is set. Uploaded also when the pack gate fails the job |
 
 `<category>` is the `category` input, or `assay-<workflow>-<job>-<os>` when it is not set. The
-category stays the same from run to run, so an alert closes when its finding is gone. Before the
-release that added this section the category the action set was not used: each run was filed under the bundle's run id and
+category stays the same from run to run, so an alert closes when its finding is gone. In v3.4.0
+and earlier the category the action set was not used: each run was filed under the bundle's run id and
 the CLI version, and only the first bundle's findings were uploaded. Alerts filed under those old
 categories do not close on their own; delete the old analyses, or dismiss the alerts, once.
 
