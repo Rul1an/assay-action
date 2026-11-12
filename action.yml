@@ -209,7 +209,7 @@ outputs:
     description: 'Count of new findings vs baseline'
     value: ${{ steps.baseline-diff.outputs.new_findings || '0' }}
   baseline_found:
-    description: 'true if the run was compared with a baseline report; false if a baseline was restored without one; empty when the comparison step did not run'
+    description: 'true if the run was compared with a baseline report; false if the baseline or the current report was missing or unreadable; empty when the comparison step did not run'
     value: ${{ steps.baseline-diff.outputs.baseline_found }}
   reports_dir:
     description: 'Path to reports directory (for artifact upload)'
@@ -903,12 +903,15 @@ runs:
         BASELINE_SARIF=".assay-baseline/lint.sarif"
         CURRENT_SARIF="$REPORTS_DIR/lint.sarif"
 
-        # baseline_found says a comparison was made. A restored directory without the report is
-        # not one, and "true" with zero new findings would read as a clean comparison.
-        if [ ! -f "$BASELINE_SARIF" ] || [ ! -f "$CURRENT_SARIF" ]; then
+        # baseline_found says a comparison was made. A report that is missing or cannot be read
+        # was not compared, and "true" with zero new findings would read as a clean comparison.
+        readable_sarif() {
+          [ -f "$1" ] && jq -e '.runs | type == "array"' "$1" >/dev/null 2>&1
+        }
+        if ! readable_sarif "$BASELINE_SARIF" || ! readable_sarif "$CURRENT_SARIF"; then
           echo "baseline_found=false" >> $GITHUB_OUTPUT
           echo "new_findings=0" >> $GITHUB_OUTPUT
-          echo "::notice::Baseline or current SARIF not found, skipping diff"
+          echo "::notice::Baseline or current SARIF is missing or unreadable, skipping diff"
           exit 0
         fi
 
@@ -1104,22 +1107,26 @@ runs:
             NOT_RUN_KNOWN=false
             continue
           fi
-          # Rule ids and reasons are pack-controlled text: one line each, no control characters.
-          # A rule without an id is still a rule that did not run, so it keeps a line.
+          # Rule ids and reasons are pack-controlled text: one line each, no control characters,
+          # no surrounding blanks. A rule without an id keeps its line with an empty id.
           echo "$PACK_JSON" | jq -r '.skipped_rules[]
             | [(.rule_id // "" | tostring), (.reason // "" | tostring)]
-            | map(gsub("[[:cntrl:]]+"; " "))
-            | (if .[0] == "" then ["(unnamed rule)", .[1]] else . end)
+            | map(gsub("[[:cntrl:]]+"; " ") | gsub("^ +| +$"; ""))
             | join("\t")' >> "$NOT_RUN_FILE"
         done < "$BUNDLES_FILE"
         if [ "$NOT_RUN_KNOWN" = "true" ]; then
-          # One line per rule id: a rule that several bundles report is one rule, named once.
-          # Rules without an id cannot be told apart by id, so each distinct line stays.
-          sort -u "$NOT_RUN_FILE" | awk -F'\t' '$1 == "(unnamed rule)" || !seen[$1]++' > "$NOT_RUN_FILE.tmp"
+          # One line per rule id, in bundle order: a rule that several bundles report is one
+          # rule, named once, with the first bundle's reason. No sort, so no locale decides.
+          # Rules without an id cannot be told apart, so none is merged away: an undercount
+          # would read as a rule that ran.
+          awk -F'\t' '$1 == "" { print; next } !seen[$1]++' "$NOT_RUN_FILE" > "$NOT_RUN_FILE.tmp"
           mv "$NOT_RUN_FILE.tmp" "$NOT_RUN_FILE"
-          NOT_RUN_COUNT=$(grep -c . "$NOT_RUN_FILE" || true)
-          while IFS=$'\t' read -r rule reason || [ -n "$rule" ]; do
-            [ -z "$rule" ] && continue
+          NOT_RUN_COUNT=$(grep -c "" "$NOT_RUN_FILE" || true)
+          # Not `IFS=tab read`: a tab is IFS whitespace, so an empty id would take the reason.
+          while IFS= read -r line || [ -n "$line" ]; do
+            rule=${line%%$'\t'*}
+            reason=${line#*$'\t'}
+            [ -n "$rule" ] || rule="(unnamed rule)"
             msg="Pack rule $rule was not run: $reason. It produced no findings."
             echo "::warning title=Pack rule not run::${msg//'%'/%25}"
           done < "$NOT_RUN_FILE"
@@ -1467,17 +1474,19 @@ runs:
             if [ -n "$PACK_ERROR_KIND" ]; then
               echo "- Error kind: \`$PACK_ERROR_KIND\`"
             fi
-            # A rule that was not run has no finding, so say it here. An empty count means the CLI
-            # gave no list (an older CLI, or a report that could not be read), which is not the
-            # same as an empty list.
+            # A rule that was not run has no finding, so say it here. An empty count means no list
+            # could be read (an older CLI, a failed report call, or a list of the wrong shape),
+            # which is not the same as an empty list.
             if [ "$PACK_STATUS" = "success" ]; then
               if [ -z "${PACK_RULES_NOT_RUN:-}" ]; then
-                echo "- Rules not run: not reported by the CLI"
+                echo "- Rules not run: unknown, no list could be read from the CLI"
               else
                 echo "- Rules not run: $PACK_RULES_NOT_RUN"
                 if [ "$PACK_RULES_NOT_RUN" != "0" ] && [ -f "${PACK_RULES_NOT_RUN_FILE:-}" ]; then
-                  while IFS=$'\t' read -r rule reason || [ -n "$rule" ]; do
-                    [ -z "$rule" ] && continue
+                  while IFS= read -r line || [ -n "$line" ]; do
+                    rule=${line%%$'\t'*}
+                    reason=${line#*$'\t'}
+                    [ -n "$rule" ] || rule="(unnamed rule)"
                     echo "  - \`${rule//\`/}\`: ${reason//[\`<>|]/ }"
                   done < "$PACK_RULES_NOT_RUN_FILE"
                   echo "  - A rule that was not run produced no findings. It did not pass."

@@ -419,7 +419,7 @@ CLI_DIR="$WORK/notrun-silent" run_job not-run-silent none "./not-run-pack.yaml" 
     fail "not run: a CLI without the list is published as '$got'"
   fi
   silent=$(pack_summary "" "")
-  grep -q '^- Rules not run: not reported by the CLI$' <<<"$silent" \
+  grep -q '^- Rules not run: unknown, no list could be read from the CLI$' <<<"$silent" \
     && pass "not run: the job summary says the CLI does not report the list" \
     || fail "not run: the job summary is silent about a CLI that does not report the list"
 }
@@ -505,13 +505,48 @@ CLI_DIR="$WORK/notrun-noid" run_job not-run-noid none "./not-run-pack.yaml" clea
   fi
 }
 
+# Rules without an id cannot be told apart, so none is merged away: two with one reason are two rules. A rule whose
+# real id is the display word for "no id" stays its own rule, and the list file keeps the id the CLI gave.
+notrun_wrapper notrun-unnamed '.skipped_rules = [{"rule_id": "", "reason": "same"}, {"rule_id": "   ", "reason": "same"}, {"rule_id": "(unnamed rule)", "reason": "real id"}]'
+CLI_DIR="$WORK/notrun-unnamed" run_job not-run-unnamed none "./not-run-pack.yaml" clean.tar.gz && {
+  list="$(output_of "$WS/out.pack" pack_rules_not_run_file || true)"
+  if [[ "$(not_run_count)" == "3" && "$(annotations)" == "3" ]] \
+    && [[ "$(grep -c "$(printf '^\tsame$')" "$list" || true)" == "2" ]]; then
+    pass "not run: unnamed rules are never merged, a blank id is unnamed, and the list file keeps the empty id"
+  else
+    fail "not run: three rules (two unnamed with one reason, one named like the display word) give count '$(not_run_count)', $(annotations) annotation(s)"
+  fi
+  # The job summary lists every one of them, the unnamed ones too.
+  if [[ "$(pack_summary 3 "$list" | grep -c '^  - `(unnamed rule)`: ')" == "3" ]]; then
+    pass "not run: the job summary lists the unnamed rules"
+  else
+    fail "not run: the job summary drops rules without an id"
+  fi
+}
+# One rule in two bundles with two reasons: the reason of the first bundle in the list, whatever the locale sorts first.
+# shellcheck disable=SC2016
+notrun_wrapper notrun-order '.skipped_rules = [{"rule_id": "p@1:R1", "reason": (if $b == "clean.tar.gz" then "zz from clean" else "aa from warning" end)}]'
+CLI_DIR="$WORK/notrun-order" run_job not-run-order none "./not-run-pack.yaml" clean.tar.gz warning.tar.gz && {
+  first=$(basename "$(head -n1 "$(output_of "$WS/out.discover" bundles_file)")" .tar.gz)
+  if [[ "$(annotations)" == "1" ]] && grep -q "was not run: .* from $first\." "$WS/pack.log"; then
+    pass "not run: a rule with two reasons keeps the reason of the first bundle ($first)"
+  else
+    fail "not run: the kept reason is not the first bundle's ($first): $(grep -o 'was not run: [a-z ]*' "$WS/pack.log" | tr '\n' ';')"
+  fi
+}
+
 # baseline_found says that a comparison was made. A restored directory without the baseline report is not one.
 step_script baseline-diff > "$WORK/baseline-diff.sh"
-baseline_found() { # <with baseline report: yes|no>; prints the output value
+baseline_found() { # <baseline report: yes|no|garbage|noruns> [current report: yes|garbage]; prints the output value
   local ws="$WORK/baseline-$1-$RANDOM"
   mkdir -p "$ws/.assay-baseline" "$ws/reports"
   echo '{"runs":[{"results":[]}]}' > "$ws/reports/lint.sarif"
-  [[ "$1" == "yes" ]] && echo '{"runs":[{"results":[]}]}' > "$ws/.assay-baseline/lint.sarif"
+  [[ "${2:-yes}" == "garbage" ]] && echo 'not json' > "$ws/reports/lint.sarif"
+  case "$1" in
+    yes) echo '{"runs":[{"results":[]}]}' > "$ws/.assay-baseline/lint.sarif" ;;
+    garbage) echo 'not json' > "$ws/.assay-baseline/lint.sarif" ;;
+    noruns) echo '{}' > "$ws/.assay-baseline/lint.sarif" ;;
+  esac
   : > "$ws/out"
   (cd "$ws" && env -i PATH="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" GITHUB_OUTPUT="$ws/out" \
     REPORTS_DIR="$ws/reports" bash "$WORK/baseline-diff.sh") > "$ws/log" 2>&1 || true
@@ -521,6 +556,13 @@ baseline_found() { # <with baseline report: yes|no>; prints the output value
   || fail "baseline: a comparison with a baseline report does not publish baseline_found=true"
 [[ "$(baseline_found no)" == "false" ]] && pass "baseline: a directory without the baseline report publishes baseline_found=false" \
   || fail "baseline: no baseline report, yet baseline_found is '$(baseline_found no)'"
+# A report that cannot be read was not compared either.
+for case in "garbage yes" "noruns yes" "yes garbage"; do
+  # shellcheck disable=SC2086 # two words on purpose
+  got=$(baseline_found $case)
+  [[ "$got" == "false" ]] && pass "baseline: an unreadable report (baseline/current: $case) publishes baseline_found=false" \
+    || fail "baseline: an unreadable report (baseline/current: $case) publishes baseline_found='$got'"
+done
 
 # shellcheck disable=SC2016 # Ruby compares a literal workflow expression.
 if out=$(ruby -ryaml -e '
