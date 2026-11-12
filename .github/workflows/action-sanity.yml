@@ -238,6 +238,10 @@ jobs:
         shell: bash
         run: ASSAY_BIN_DIR="$(dirname "$(command -v assay)")" bash scripts/test_counts_agreement_contract.sh
 
+      - name: Verify the code scanning contract
+        shell: bash
+        run: ASSAY_BIN_DIR="$(dirname "$(command -v assay)")" bash scripts/test_code_scanning_contract.sh
+
   required-zero-pr:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
