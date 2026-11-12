@@ -243,3 +243,11 @@ jobs:
           FINDINGS_ERROR: ${{ steps.candidate-sandbox.outputs.findings_error }}
           FINDINGS_WARN: ${{ steps.candidate-sandbox.outputs.findings_warn }}
         run: bash scripts/assert_counts_match_cli.sh "$BUNDLE"
+
+      # The contract on the tagged action with the CLI it installed. With the latest CLI it requires the list of
+      # pack rules not run, so that path is proven on a real CLI before the floating tag moves.
+      - name: Verify the tagged action reports the CLI verdict
+        shell: bash
+        env:
+          REQUIRE_SKIPPED_RULES: ${{ steps.cli-version.outputs.value == 'latest' && '1' || '0' }}
+        run: ASSAY_BIN_DIR="$(dirname "$(command -v assay)")" bash scripts/test_cli_verdict_contract.sh

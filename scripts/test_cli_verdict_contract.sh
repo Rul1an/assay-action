@@ -339,6 +339,25 @@ not_run_oracle() { # prints the number of distinct rules the CLI under test says
     .assay/evidence/clean.tar.gz 2>/dev/null) \
     | jq -r 'if has("skipped_rules") then (.skipped_rules | map(.rule_id) | unique | length) else "" end'
 }
+# Verdict of the real-CLI leg: prints "ok: ..." or "bad: ...". <want> is the oracle's answer ("" when the CLI has
+# no list), <got> what the action published.
+not_run_real_verdict() { # <want> <got> <pack step exit>
+  local want=$1 got=$2 code=$3
+  if [[ "$code" != "0" || "$got" != "$want" ]]; then
+    echo "bad: action says '$got', the CLI under test says '$want' (pack step exit $code)"
+  elif [[ -z "$want" ]]; then
+    if [[ "${REQUIRE_SKIPPED_RULES:-0}" == "1" ]]; then
+      echo "bad: the CLI under test reports no list of rules not run, and this run requires one"
+    else
+      echo "ok: the CLI under test has no list of rules not run and the action publishes none; the wrappers below cover the list"
+    fi
+  elif ! [[ "$want" =~ ^[0-9]+$ ]] || [[ "$want" -lt 1 ]]; then
+    echo "bad: the CLI under test has the list but names no rule for the fixture pack ('$want'), so equal values prove nothing"
+  else
+    echo "ok: pack_rules_not_run='$got' equals what the CLI under test reports"
+  fi
+}
+
 # The verdict of the real-CLI leg, checked on its own: an empty answer on both sides is acceptable only for a CLI
 # that has no list, a CLI that has the list must name at least one rule for the fixture pack, and a run that
 # requires the list (REQUIRE_SKIPPED_RULES=1, used with the latest CLI) refuses a CLI without one.
@@ -367,10 +386,11 @@ verdict_case "a run that requires the list accepts a CLI with one (control)" ok 
 run_job not-run-real none "./not-run-pack.yaml" clean.tar.gz && {
   want=$(not_run_oracle)
   got=$(output_of "$WS/out.pack" pack_rules_not_run || true)
-  if [[ "$(cat "$WS/pack.code")" == "0" && "$got" == "$want" ]]; then
-    pass "not run: pack_rules_not_run='$got' equals what the CLI under test reports"
+  verdict=$(not_run_real_verdict "$want" "$got" "$(cat "$WS/pack.code")")
+  if [[ "$verdict" == "ok:"* ]]; then
+    pass "not run: ${verdict#ok: }"
   else
-    fail "not run: action says '$got', the CLI under test says '$want' (pack step exit $(cat "$WS/pack.code"))"
+    fail "not run: ${verdict#bad: }"
   fi
 }
 
