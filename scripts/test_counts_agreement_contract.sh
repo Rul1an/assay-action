@@ -265,6 +265,23 @@ if out=$(ruby -ryaml -e '
   abort("the contract step must come after the sandbox review") unless review < hits.first
   version = steps.index { |s| s["id"] == "cli-version" }
   abort("no cli-version step before the contract step") unless version && version < hits.first
+  # The requirement reads the output of that step, so what the step emits is pinned too: "latest" unless the operator
+  # asked for another CLI, and both runs of the action install exactly that value.
+  resolve = steps[version]
+  abort("the cli-version step has unexpected keys: #{(resolve.keys - %w[name id shell env run]).join(", ")}") unless
+    (resolve.keys - %w[name id shell env run]).empty?
+  abort("the cli-version step env must be the dispatch input only, got #{resolve["env"].inspect}") unless
+    resolve["env"] == { "REQUESTED_VERSION" => "${{ inputs.assay_cli_version }}" }
+  want_resolve = "set -euo pipefail\nversion=\"${REQUESTED_VERSION:-latest}\"\necho \"value=$version\" >> \"$GITHUB_OUTPUT\""
+  abort("the cli-version step must emit the requested version or latest, got #{resolve["run"].inspect}") unless
+    resolve["run"].to_s.strip == want_resolve
+  abort("exactly one step may have id cli-version") unless steps.count { |s| s["id"] == "cli-version" } == 1
+  installs = steps.select { |s| s["uses"] == "./" }
+  abort("the candidate lane must run the tagged action") if installs.empty?
+  installs.each do |s|
+    abort("step #{s["id"].inspect} must install ${{ steps.cli-version.outputs.value }}, got #{s.dig("with", "version").inspect}") unless
+      s.dig("with", "version") == "${{ steps.cli-version.outputs.value }}"
+  end
 ' "$CANARY" 2>&1); then
   pass "wiring: the candidate lane runs the verdict contract and requires the rules-not-run list with the latest CLI"
 else

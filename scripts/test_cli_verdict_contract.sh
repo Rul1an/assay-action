@@ -342,11 +342,13 @@ not_run_oracle() { # prints the number of distinct rules the CLI under test says
 # Verdict of the real-CLI leg: prints "ok: ..." or "bad: ...". <want> is the oracle's answer ("" when the CLI has
 # no list), <got> what the action published.
 not_run_real_verdict() { # <want> <got> <pack step exit>
-  local want=$1 got=$2 code=$3
-  if [[ "$code" != "0" || "$got" != "$want" ]]; then
+  local want=$1 got=$2 code=$3 require=${REQUIRE_SKIPPED_RULES:-0}
+  if [[ "$require" != "0" && "$require" != "1" ]]; then
+    echo "bad: REQUIRE_SKIPPED_RULES must be 0 or 1, got '$require'"
+  elif [[ "$code" != "0" || "$got" != "$want" ]]; then
     echo "bad: action says '$got', the CLI under test says '$want' (pack step exit $code)"
   elif [[ -z "$want" ]]; then
-    if [[ "${REQUIRE_SKIPPED_RULES:-0}" == "1" ]]; then
+    if [[ "$require" == "1" ]]; then
       echo "bad: the CLI under test reports no list of rules not run, and this run requires one"
     else
       echo "ok: the CLI under test has no list of rules not run and the action publishes none; the wrappers below cover the list"
@@ -374,6 +376,18 @@ verdict_case() { # <label> <expected ok|bad> <require 0|1> <want> <got> <pack ex
     fail "not run verdict: $1: expected $2, got '$out'"
   fi
 }
+# Only 0 and 1 are answers to "is the list required". A typo must not relax the guard without a word.
+for value in true yes 01 " 1" "1 " 2; do
+  out=$(REQUIRE_SKIPPED_RULES="$value" not_run_real_verdict "" "" 0 2>/dev/null || true)
+  if [[ "$out" == "bad:"* ]]; then
+    pass "not run verdict: REQUIRE_SKIPPED_RULES='$value' is refused"
+  else
+    fail "not run verdict: REQUIRE_SKIPPED_RULES='$value' gives '$out'"
+  fi
+done
+out=$(env -u REQUIRE_SKIPPED_RULES bash -c "$(declare -f not_run_real_verdict); not_run_real_verdict '' '' 0" 2>/dev/null || true)
+[[ "$out" == "ok:"* ]] && pass "not run verdict: an unset REQUIRE_SKIPPED_RULES does not require the list (control)" \
+  || fail "not run verdict: an unset REQUIRE_SKIPPED_RULES gives '$out'"
 verdict_case "a CLI without the list and an empty output is accepted" ok 0 "" "" 0
 verdict_case "a CLI with the list and an equal count is accepted (control)" ok 0 1 1 0
 verdict_case "a CLI with the list that names no rule for the fixture pack is refused" bad 0 0 0 0
