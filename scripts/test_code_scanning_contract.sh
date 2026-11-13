@@ -203,16 +203,18 @@ fi
 if [[ -f "$REPO_ROOT/scripts/unique_stem.sh" ]]; then
   stems="$(/bin/bash -c '
     source "$1"; used=$(mktemp); : > "$used"
-    for bundle in a/b.tar.gz c/b.tar.gz d/b-2.tar.gz e/b.tar.gz "f/x y.tar.gz" "g/x y.tar.gz" $'"'"'h/n\nl.tar.gz'"'"' $'"'"'i/n\nl.tar.gz'"'"' "j/-rf.tar.gz"; do
+    export LC_ALL=en_US.UTF-8
+    for bundle in a/b.tar.gz c/b.tar.gz d/b-2.tar.gz e/b.tar.gz "f/x y.tar.gz" "g/x y.tar.gz" $'"'"'h/n\nl.tar.gz'"'"' $'"'"'i/n\nl.tar.gz'"'"' "j/-rf.tar.gz" $'"'"'k/caf\303\251.tar.gz'"'"'; do
       unique_stem "$used" "$bundle"
     done' _ "$REPO_ROOT/scripts/unique_stem.sh" 2>&1 &
     pid=$!; ( sleep 10; kill "$pid" 2>/dev/null ) & wait "$pid")" || true
-  check "stem: nine bundles get nine names" test "$(grep -c . <<<"$stems")" = "9"
-  check "stem: no two bundles share a name" test "$(sort -u <<<"$stems" | grep -c .)" = "9"
+  check "stem: ten bundles get ten names" test "$(grep -c . <<<"$stems")" = "10"
+  check "stem: no two bundles share a name" test "$(sort -u <<<"$stems" | grep -c .)" = "10"
   check "stem: the first bundle keeps its name and the next one is numbered from 2" test \
     "$(sed -n '1p;2p' <<<"$stems" | tr '\n' ' ')" = "b b-2 "
-  if grep -qvE '^[A-Za-z0-9._-]+$' <<<"$stems"; then
-    fail "stem: a name holds a character that is not safe in a file name: $(grep -vE '^[A-Za-z0-9._-]+$' <<<"$stems" | head -n1)"
+  # Judged in the C locale: under a UTF-8 locale a range like A-Z also matches accented letters.
+  if LC_ALL=C grep -qvE '^[A-Za-z0-9._-]+$' <<<"$stems"; then
+    fail "stem: a name holds a character that is not safe in a file name: $(LC_ALL=C grep -vE '^[A-Za-z0-9._-]+$' <<<"$stems" | head -n1)"
   else
     pass "stem: every name is a plain file name"
   fi
@@ -332,6 +334,53 @@ check "status: on a fork pull request without a SARIF file the reason given is t
 status_log="$(env -i PATH="/usr/bin:/bin" GITHUB_OUTPUT="$WORK/status.out" UPLOAD_OUTCOME=failure IS_FORK_PR=false \
   SARIF_READY="true" bash "$WORK/status.sh" 2>&1 || true)"
 check "status: a failed upload is still reported as one (control)" grep -qi 'upload failed' <<<"$status_log"
+
+# A review step that fails on its gate has still reviewed: it says so, and the pack step, the pack upload and the
+# reports artifact follow it. A review step that failed for another reason says nothing of the kind.
+gate_run() { # <name> <fail_on>: runs discover and process on the warning bundle; leaves $WS/out.process and process.code
+  WS="$WORK/$1"
+  mkdir -p "$WS/ws/.assay/evidence" "$WS/tmp"
+  cp "$FIXTURES/warning.tar.gz" "$WS/ws/.assay/evidence/w.tar.gz"
+  local base=(env -i HOME="$WORK/home" PATH="$ASSAY_BIN_DIR:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
+    GITHUB_WORKSPACE="$WS/ws" GITHUB_ACTION_PATH="$REPO_ROOT" RUNNER_TEMP="$WS/tmp")
+  : > "$WS/out.discover"; : > "$WS/out.process"
+  step_script discover > "$WS/discover.sh"; step_script process > "$WS/process.sh"
+  (cd "$WS/ws" && "${base[@]}" GITHUB_OUTPUT="$WS/out.discover" BUNDLES_PATTERN=".assay/evidence/*.tar.gz" \
+    EVIDENCE_MODE=optional SANDBOX_BUNDLE="" bash "$WS/discover.sh") > "$WS/discover.log" 2>&1 || return 1
+  local code=0
+  (cd "$WS/ws" && "${base[@]}" GITHUB_OUTPUT="$WS/out.process" FAIL_ON="$2" \
+    BUNDLES_FILE="$(output_of "$WS/out.discover" bundles_file)" \
+    INDEX_PATH="$(output_of "$WS/out.discover" evidence_index_path)" bash "$WS/process.sh") > "$WS/process.log" 2>&1 || code=$?
+  echo "$code" > "$WS/process.code"
+}
+if gate_run gate-fails warn; then
+  check "gate: a warning fails the review step at fail_on=warn (control)" test "$(cat "$WS/process.code")" = "1"
+  check "gate: the failed review step says it failed on its gate" test "$(output_of "$WS/out.process" gate_failed)" = "true"
+  check "gate: and that it wrote this run's lint.sarif" test "$(output_of "$WS/out.process" lint_sarif_ready)" = "true"
+else
+  fail "gate: could not run the review step"
+fi
+if gate_run gate-passes none; then
+  check "gate: a review step that passed does not claim a gate failure" test -z "$(output_of "$WS/out.process" gate_failed)"
+fi
+# shellcheck disable=SC2016 # Ruby compares literal workflow expressions.
+if out=$(ruby -ryaml -e '
+  steps = YAML.safe_load_file(ARGV[0], aliases: false).fetch("runs").fetch("steps")
+  marker = "steps.process.outputs.gate_failed == \x27true\x27"
+  {"pack-lint" => "the pack step", "pack-sarif" => "the pack SARIF step", "upload-pack-sarif" => "the pack upload"}.each do |id, label|
+    step = steps.find { |s| s["id"] == id } or abort("no step #{id}")
+    abort("#{label} must also run after a review step that failed on its gate") unless step["if"].to_s.include?(marker)
+  end
+  artifact = steps.find { |s| s["name"] == "Upload reports artifact" } or abort("no reports artifact step")
+  abort("the reports artifact must also be uploaded after a failed gate") unless artifact["if"].to_s.include?(marker)
+  pack = steps.find { |s| s["id"] == "pack-lint" }
+  abort("the pack step must not run after a review step that failed for another reason") if
+    pack["if"].to_s.include?("always()") || pack["if"].to_s.include?("failure()")
+' "$ACTION" 2>&1); then
+  pass "gate: the pack step, the pack upload and the reports artifact follow a failed lint gate"
+else
+  fail "gate: $out"
+fi
 
 # ---------------------------------------------------------------------------------------------------------------
 # The merge itself refuses what it cannot merge honestly

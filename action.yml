@@ -684,6 +684,10 @@ runs:
 
         if [ "$GATE_HITS" -gt 0 ]; then
           echo "::error::$GATE_HITS bundle(s) have findings at or above '$FAIL_ON' ($ERRORS errors, $WARNS warnings)"
+          # The review itself completed: every bundle was verified and linted, and the reports are
+          # written. The pack step, the uploads and the reports artifact follow a step that failed
+          # this way; they do not follow one that failed for any other reason.
+          echo "gate_failed=true" >> $GITHUB_OUTPUT
           exit 1
         fi
 
@@ -1037,7 +1041,9 @@ runs:
 
     - name: Lint with compliance packs
       id: pack-lint
-      if: inputs.pack != '' && steps.discover.outputs.found == 'true'
+      # Also after a review step that failed on its gate: the job that fails on its findings is
+      # the job whose pack findings are wanted too.
+      if: inputs.pack != '' && steps.discover.outputs.found == 'true' && (success() || steps.process.outputs.gate_failed == 'true')
       shell: bash
       env:
         PACKS: ${{ inputs.pack }}
@@ -1222,7 +1228,7 @@ runs:
     - name: Prepare pack findings for code scanning
       id: pack-sarif
       # Also after a pack step that failed on its gate: that is when the findings matter most.
-      if: inputs.sarif == 'true' && inputs.pack != '' && steps.discover.outputs.found == 'true' && (success() || steps.pack-lint.outcome == 'failure') && steps.pack-lint.outputs.pack_status == 'success'
+      if: inputs.sarif == 'true' && inputs.pack != '' && steps.discover.outputs.found == 'true' && (success() || steps.pack-lint.outcome == 'failure' || steps.process.outputs.gate_failed == 'true') && steps.pack-lint.outputs.pack_status == 'success'
       shell: bash
       env:
         CATEGORY: ${{ steps.sarif-category.outputs.category }}
@@ -1265,7 +1271,7 @@ runs:
       if: |
         inputs.sarif == 'true' && inputs.pack != '' &&
         steps.pack-sarif.outputs.ready == 'true' &&
-        (success() || steps.pack-lint.outcome == 'failure') &&
+        (success() || steps.pack-lint.outcome == 'failure' || steps.process.outputs.gate_failed == 'true') &&
         (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
       uses: github/codeql-action/upload-sarif@68bde559dea0fdcac2102bfdf6230c5f70eb485e # v4.35.4
       with:
@@ -1275,7 +1281,7 @@ runs:
     - name: Upload reports artifact
       # After the pack step so the artifact holds the pack SARIF and its logs. It still uploads
       # when the pack step itself fails, as it did when it ran before that step.
-      if: steps.discover.outputs.found == 'true' && (success() || steps.pack-lint.outcome == 'failure')
+      if: steps.discover.outputs.found == 'true' && (success() || steps.pack-lint.outcome == 'failure' || steps.process.outputs.gate_failed == 'true')
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       continue-on-error: true
       with:
