@@ -76,6 +76,7 @@ run_job() { # <name> <user category or ""> <packs or ""> <bundle=fixture>...
   mkdir -p "$WS/ws/.assay/evidence" "$WS/tmp"
   local pair
   for pair in "$@"; do
+    mkdir -p "$(dirname "$WS/ws/.assay/evidence/${pair%%=*}")"
     cp "$FIXTURES/${pair#*=}" "$WS/ws/.assay/evidence/${pair%%=*}"
   done
   cp "$FIXTURES"/*.yaml "$WS/ws/"
@@ -87,7 +88,7 @@ run_job() { # <name> <user category or ""> <packs or ""> <bundle=fixture>...
   done
 
   step_script discover > "$WS/discover.sh"
-  (cd "$WS/ws" && "${base[@]}" GITHUB_OUTPUT="$WS/out.discover" BUNDLES_PATTERN=".assay/evidence/*.tar.gz" \
+  (cd "$WS/ws" && "${base[@]}" GITHUB_OUTPUT="$WS/out.discover" BUNDLES_PATTERN="${BUNDLES_PATTERN-.assay/evidence/*.tar.gz}" \
     EVIDENCE_MODE=optional SANDBOX_BUNDLE="" bash "$WS/discover.sh") > "$WS/discover.log" 2>&1 \
     || { fail "$name: discover step failed"; return 1; }
 
@@ -101,7 +102,8 @@ run_job() { # <name> <user category or ""> <packs or ""> <bundle=fixture>...
 
   step_script sarif-category > "$WS/category.sh"
   (cd "$WS/ws" && "${base[@]}" GITHUB_OUTPUT="$WS/out.sarif-category" USER_CATEGORY="$user_category" \
-    RUNNER_OS=Linux WORKFLOW_NAME=ci JOB_NAME=review REPORTS_DIR="$REPORTS" bash "$WS/category.sh") \
+    RUNNER_OS=Linux WORKFLOW_NAME=ci JOB_NAME=review REPORTS_DIR="$REPORTS" \
+    LINT_SARIF_READY="$(output_of "$WS/out.process" lint_sarif_ready)" bash "$WS/category.sh") \
     > "$WS/category.log" 2>&1 || { fail "$name: category step failed"; return 1; }
   CATEGORY="$(output_of "$WS/out.sarif-category" category)"
 
@@ -175,6 +177,42 @@ if run_job user-category "team/evidence" "" b-warn.tar.gz=warning.tar.gz; then
   check "category: the step says the file is ready to upload" test "$(output_of "$WS/out.sarif-category" ready)" = "true"
 fi
 
+# Two bundles with one file name in different directories are two bundles: each keeps its own report.
+if BUNDLES_PATTERN="" run_job same-name "" "./failing-pack.yaml" b.tar.gz=clean.tar.gz nested/b.tar.gz=warning.tar.gz; then
+  want="$(for b in b nested/b; do cli_results ".assay/evidence/$b.tar.gz"; done)"
+  if same_lines "$want" "$(file_results "$REPORTS/lint.sarif")"; then
+    pass "same name: lint.sarif carries each of two bundles named b.tar.gz once"
+  else
+    fail "same name: lint.sarif has $(file_results "$REPORTS/lint.sarif" | tr '\n' ';'), the CLI reports $(tr '\n' ';' <<<"$want")"
+  fi
+  want="$(for b in b nested/b; do cli_results ".assay/evidence/$b.tar.gz" --pack ./failing-pack.yaml; done | grep '^cli-verdict-fixture@1\.0\.0:' || true)"
+  if same_lines "$want" "$(file_results "$REPORTS/pack-code-scanning.sarif" 2>/dev/null)"; then
+    pass "same name: the pack file carries each of two bundles named b.tar.gz once"
+  else
+    fail "same name: the pack file does not carry both bundles' pack findings"
+  fi
+  check "same name: both per-bundle lint reports are kept" test "$(find "$REPORTS" -name 'lint-b*.sarif' | wc -l | tr -d ' ')" = "2"
+  # The pack rule fires the same way on both bundles, so the merged results cannot tell one report read twice from
+  # two reports. The files can.
+  check "same name: both per-bundle pack reports are kept" test "$(find "$REPORTS" -name 'pack-lint-b*.sarif' | wc -l | tr -d ' ')" = "2"
+  check "same name: the pack step lists two different reports" test "$(sort -u "$REPORTS/pack-sarif-files.list" | wc -l | tr -d ' ')" = "2"
+fi
+
+# A report left by an earlier use of the action in the same job is not this run's report. When this run's review
+# step wrote none, the category step must not stamp the old file or call it ready.
+step_script sarif-category > "$WORK/category-only.sh"
+mkdir -p "$WORK/stale"
+printf '%s' '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"assay-evidence-lint","rules":[]}},"results":[],"automationDetails":{"id":"old/"}}]}' > "$WORK/stale/lint.sarif"
+: > "$WORK/stale/out"
+env -i PATH="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" GITHUB_OUTPUT="$WORK/stale/out" USER_CATEGORY="" RUNNER_OS=Linux \
+  WORKFLOW_NAME=ci JOB_NAME=review REPORTS_DIR="$WORK/stale" LINT_SARIF_READY="" bash "$WORK/category-only.sh" \
+  > "$WORK/stale/log" 2>&1 || true
+if ! grep -q '^ready=true$' "$WORK/stale/out" && [[ "$(jq -r '.runs[0].automationDetails.id' "$WORK/stale/lint.sarif")" == "old/" ]]; then
+  pass "stale: a lint.sarif this run did not write is neither stamped nor announced"
+else
+  fail "stale: an earlier run's lint.sarif was stamped or announced as this run's"
+fi
+
 # ---------------------------------------------------------------------------------------------------------------
 # 3. Pack findings: their own file, their own category, pack rules only
 # ---------------------------------------------------------------------------------------------------------------
@@ -215,6 +253,7 @@ if step_script pack-sarif > "$WORK/pack-sarif-only.sh" 2>/dev/null; then
         {"ruleId": "another-pack@2.0.0:X-1", "level": "warning", "message": {"text": "a rule of a pack that was not applied"}}]
         | .runs[0].tool.driver.rules += [{"id": "another-pack@2.0.0:X-1"}]' \
     > "$WORK/mixed/pack-lint-mixed.sarif"
+  printf '%s\n' "$WORK/mixed/pack-lint-mixed.sarif" > "$WORK/mixed/pack-sarif-files.list"
   if env -i PATH="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" GITHUB_ACTION_PATH="$REPO_ROOT" \
     GITHUB_OUTPUT="$WORK/mixed/out" CATEGORY="cat" REPORTS_DIR="$WORK/mixed" bash "$WORK/pack-sarif-only.sh" \
     > "$WORK/mixed/log" 2>&1; then
@@ -229,6 +268,7 @@ if step_script pack-sarif > "$WORK/pack-sarif-only.sh" 2>/dev/null; then
   # empty upload would close every open pack alert. It must not write or announce a file.
   mkdir -p "$WORK/unnamed"
   jq 'del(.runs[0].tool.driver.properties.assayPacks)' "$WORK/mixed/pack-lint-mixed.sarif" > "$WORK/unnamed/pack-lint-x.sarif"
+  printf '%s\n' "$WORK/unnamed/pack-lint-x.sarif" > "$WORK/unnamed/pack-sarif-files.list"
   env -i PATH="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" GITHUB_ACTION_PATH="$REPO_ROOT" \
     GITHUB_OUTPUT="$WORK/unnamed/out" CATEGORY="cat" REPORTS_DIR="$WORK/unnamed" bash "$WORK/pack-sarif-only.sh" \
     > "$WORK/unnamed/log" 2>&1 || true
@@ -243,6 +283,7 @@ if step_script pack-sarif > "$WORK/pack-sarif-only.sh" 2>/dev/null; then
   jq '.runs[0].tool.driver.properties.assayPacks = [{"name": "another-pack", "version": "2.0.0"}]' \
     "$WORK/mixed/pack-lint-mixed.sarif" > "$WORK/twopacks/pack-lint-b.sarif"
   cp "$WORK/mixed/pack-lint-mixed.sarif" "$WORK/twopacks/pack-lint-a.sarif"
+  printf '%s\n' "$WORK/twopacks/pack-lint-a.sarif" "$WORK/twopacks/pack-lint-b.sarif" > "$WORK/twopacks/pack-sarif-files.list"
   env -i PATH="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" GITHUB_ACTION_PATH="$REPO_ROOT" \
     GITHUB_OUTPUT="$WORK/twopacks/out" CATEGORY="cat" REPORTS_DIR="$WORK/twopacks" bash "$WORK/pack-sarif-only.sh" \
     > "$WORK/twopacks/log" 2>&1 || true

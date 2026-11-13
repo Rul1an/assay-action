@@ -571,6 +571,10 @@ runs:
         TOTAL_ERRORS=0
         TOTAL_WARNS=0
         BUNDLE_SARIFS=()
+        # One report name per bundle of this run, also for bundles that share a file name.
+        source "$GITHUB_ACTION_PATH/scripts/unique_stem.sh"
+        LINT_STEMS="$TEMP_DIR/assay-lint-stems.txt"
+        : > "$LINT_STEMS"
         TOTAL_INFOS=0
         INFOS_KNOWN=true
         GATE_HITS=0
@@ -632,7 +636,7 @@ runs:
 
           # SARIF for this bundle. The JSON report above succeeded for it, so a failure here is not
           # "no findings": the bundle's results would be missing from code scanning without a word.
-          BUNDLE_SARIF="$REPORTS_DIR/lint-$(basename "$bundle" .tar.gz).sarif"
+          BUNDLE_SARIF="$REPORTS_DIR/lint-$(unique_stem "$LINT_STEMS" "$bundle").sarif"
           if ! assay evidence lint --format sarif --fail-on none "$bundle" > "$BUNDLE_SARIF" 2>"$TEMP_DIR/lint-sarif.err"; then
             echo "::error::Could not write the SARIF report of $bundle"
             cat "$TEMP_DIR/lint-sarif.err" >&2 || true
@@ -650,6 +654,9 @@ runs:
             echo "::error::Could not merge the SARIF reports of ${#BUNDLE_SARIFS[@]} bundle(s)"
             exit 2
           fi
+          # Said by the run that wrote the file. A lint.sarif left by an earlier use of the action
+          # in the same job is not this run's report.
+          echo "lint_sarif_ready=true" >> $GITHUB_OUTPUT
         fi
 
         # JUnit files:
@@ -709,6 +716,7 @@ runs:
         WORKFLOW_NAME: ${{ github.workflow }}
         JOB_NAME: ${{ github.job }}
         REPORTS_DIR: ${{ steps.process.outputs.reports_dir }}
+        LINT_SARIF_READY: ${{ steps.process.outputs.lint_sarif_ready }}
       run: |
         set -euo pipefail
         if [ -n "$USER_CATEGORY" ]; then
@@ -728,7 +736,7 @@ runs:
         # category input of the upload action, and the CLI writes one that holds the bundle's run
         # id and the CLI version: left in place, every run and every CLI upgrade would open a new
         # category and the alerts of the old one would never close.
-        if [ -f "$REPORTS_DIR/lint.sarif" ]; then
+        if [ "${LINT_SARIF_READY:-}" = "true" ] && [ -f "$REPORTS_DIR/lint.sarif" ]; then
           jq --arg id "${CATEGORY%/}/" '.runs[].automationDetails = {id: $id}' \
             "$REPORTS_DIR/lint.sarif" > "$REPORTS_DIR/lint.sarif.tmp"
           mv "$REPORTS_DIR/lint.sarif.tmp" "$REPORTS_DIR/lint.sarif"
@@ -1046,11 +1054,22 @@ runs:
         # Lint with packs (generates pack-enhanced SARIF). Use --fail-on none so
         # policy findings do not masquerade as pack-loading/config errors.
         # Pack-loading/config/runtime failures still fail this step with exit 3.
+        # The reports of THIS run, by name: a glob would also pick up files an earlier use of the
+        # action left in the same directory, and bundles that share a file name need two names.
+        source "$GITHUB_ACTION_PATH/scripts/unique_stem.sh"
+        PACK_STEMS="${RUNNER_TEMP:-/tmp}/assay-pack-stems.txt"
+        : > "$PACK_STEMS"
+        PACK_SARIF_LIST="$REPORTS_DIR/pack-sarif-files.list"
+        : > "$PACK_SARIF_LIST"
+        PACK_SARIFS=()
         while IFS= read -r bundle || [ -n "$bundle" ]; do
           [ -z "$bundle" ] && continue
           echo "Linting with packs: $bundle"
-          OUT_SARIF="$REPORTS_DIR/pack-lint-$(basename "$bundle" .tar.gz).sarif"
-          OUT_ERR="$REPORTS_DIR/pack-lint-$(basename "$bundle" .tar.gz).stderr.log"
+          PACK_STEM=$(unique_stem "$PACK_STEMS" "$bundle")
+          OUT_SARIF="$REPORTS_DIR/pack-lint-$PACK_STEM.sarif"
+          OUT_ERR="$REPORTS_DIR/pack-lint-$PACK_STEM.stderr.log"
+          PACK_SARIFS+=("$OUT_SARIF")
+          printf '%s\n' "$OUT_SARIF" >> "$PACK_SARIF_LIST"
 
           if assay evidence lint \
             --format sarif \
@@ -1091,8 +1110,7 @@ runs:
         fi
 
         # Merge SARIF files (or copy if only one)
-        SARIF_FILES=$(ls "$REPORTS_DIR"/pack-lint-*.sarif 2>/dev/null || echo "")
-        if [ -z "$SARIF_FILES" ]; then
+        if [ "${#PACK_SARIFS[@]}" -eq 0 ]; then
           echo "::error::No SARIF files generated for compliance packs."
           echo "pack_applied=" >> $GITHUB_OUTPUT
           echo "resolved_pack_refs=" >> $GITHUB_OUTPUT
@@ -1104,12 +1122,11 @@ runs:
         fi
 
         # Count SARIF files and merge if multiple
-        SARIF_COUNT=$(echo "$SARIF_FILES" | wc -w | tr -d ' ')
-        if [ "$SARIF_COUNT" -eq 1 ]; then
-          cp $SARIF_FILES "$REPORTS_DIR/pack-lint.sarif"
+        if [ "${#PACK_SARIFS[@]}" -eq 1 ]; then
+          cp "${PACK_SARIFS[0]}" "$REPORTS_DIR/pack-lint.sarif"
         else
           # Merge all SARIF runs into single file
-          jq -s '.[0] * { runs: [.[].runs[]] }' $SARIF_FILES > "$REPORTS_DIR/pack-lint.sarif" 2>/dev/null || cp $(echo $SARIF_FILES | cut -d' ' -f1) "$REPORTS_DIR/pack-lint.sarif"
+          jq -s '.[0] * { runs: [.[].runs[]] }' "${PACK_SARIFS[@]}" > "$REPORTS_DIR/pack-lint.sarif" 2>/dev/null || cp "${PACK_SARIFS[0]}" "$REPORTS_DIR/pack-lint.sarif"
         fi
         SARIF="$REPORTS_DIR/pack-lint.sarif"
 
@@ -1216,8 +1233,12 @@ runs:
         # its own category: code scanning takes one run per tool and category, and lint.sarif holds
         # the action's. A run without results is still written and uploaded; that is how an alert
         # for a finding that is gone gets closed.
-        PACK_FILES=( "$REPORTS_DIR"/pack-lint-*.sarif )
-        if [ ! -e "${PACK_FILES[0]}" ]; then
+        # The pack step's own list of this run's reports, never a glob over the directory.
+        PACK_FILES=()
+        while IFS= read -r file || [ -n "$file" ]; do
+          [ -n "$file" ] && [ -f "$file" ] && PACK_FILES+=("$file")
+        done < "$REPORTS_DIR/pack-sarif-files.list"
+        if [ "${#PACK_FILES[@]}" -eq 0 ]; then
           echo "::error::No pack SARIF to prepare for code scanning"
           exit 2
         fi
