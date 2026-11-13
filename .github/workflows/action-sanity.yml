@@ -249,6 +249,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -263,7 +264,8 @@ jobs:
           bundles: scripts/fixtures/cli-verdict/warning.tar.gz
           fail_on: warn
           pack: ./scripts/fixtures/cli-verdict/failing-pack.yaml
-          sarif: false
+          sarif: true
+          category: live-upload-probe
           comment_diff: false
 
       - name: Assert the lint gate failed the step and the pack step still ran
@@ -283,6 +285,17 @@ jobs:
           test "$PACK_STATUS" = "success"
           test "$PACK_APPLIED" = "cli-verdict-fixture@1.0.0"
           test -f .assay-reports/pack-lint.sarif
+
+      - name: Assert both uploads ran after the failed lint gate
+        shell: bash
+        env:
+          SARIF_UPLOADED: ${{ steps.review.outputs.sarif_uploaded }}
+        run: |
+          set -euo pipefail
+          echo "sarif_uploaded=$SARIF_UPLOADED"
+          test "$SARIF_UPLOADED" = "true"
+          test -f .assay-reports/pack-code-scanning.sarif
+          jq -c '{id: .runs[0].automationDetails.id, results: (.runs[0].results | length)}' .assay-reports/lint.sarif .assay-reports/pack-code-scanning.sarif
 
   required-zero-pr:
     if: github.event_name == 'pull_request'
