@@ -337,10 +337,12 @@ check "status: a failed upload is still reported as one (control)" grep -qi 'upl
 
 # A review step that fails on its gate has still reviewed: it says so, and the pack step, the pack upload and the
 # reports artifact follow it. A review step that failed for another reason says nothing of the kind.
-gate_run() { # <name> <fail_on>: runs discover and process on the warning bundle; leaves $WS/out.process and process.code
+gate_run() { # <name> <fail_on> [setup]: runs discover and process on the warning bundle; leaves $WS/out.process and process.code
   WS="$WORK/$1"
   mkdir -p "$WS/ws/.assay/evidence" "$WS/tmp"
   cp "$FIXTURES/warning.tar.gz" "$WS/ws/.assay/evidence/w.tar.gz"
+  # An optional third argument changes the workspace before the steps run.
+  if [[ -n "${3:-}" ]]; then eval "$3"; fi
   local base=(env -i HOME="$WORK/home" PATH="$ASSAY_BIN_DIR:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
     GITHUB_WORKSPACE="$WS/ws" GITHUB_ACTION_PATH="$REPO_ROOT" RUNNER_TEMP="$WS/tmp")
   : > "$WS/out.discover"; : > "$WS/out.process"
@@ -361,7 +363,19 @@ else
   fail "gate: could not run the review step"
 fi
 if gate_run gate-passes none; then
+  check "gate: the review step passes at fail_on=none (control)" test "$(cat "$WS/process.code")" = "0"
   check "gate: a review step that passed does not claim a gate failure" test -z "$(output_of "$WS/out.process" gate_failed)"
+else
+  fail "gate: could not run the review step at fail_on=none"
+fi
+# A review step that fails because a bundle does not verify has not completed its review: no marker, so nothing
+# that waits for the marker follows it.
+# shellcheck disable=SC2016 # The setup is evaluated inside gate_run, where WS is set.
+if gate_run gate-unverified warn 'printf "not a bundle\n" > "$WS/ws/.assay/evidence/w.tar.gz"'; then
+  check "gate: a bundle that does not verify fails the review step with another exit code" test "$(cat "$WS/process.code")" = "2"
+  check "gate: and that failure is not called a gate failure" test -z "$(output_of "$WS/out.process" gate_failed)"
+else
+  fail "gate: could not run the review step on an unverifiable bundle"
 fi
 # shellcheck disable=SC2016 # Ruby compares literal workflow expressions.
 if out=$(ruby -ryaml -e '
