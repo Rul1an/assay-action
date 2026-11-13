@@ -197,7 +197,7 @@ is correct or safe. It makes the observed evidence boundary reviewable.
 | Pack SARIF | `.assay-reports/pack-code-scanning.sarif` | Code scanning upload of pack findings, when `pack` is set |
 | JSON report | `.assay-reports/lint.json` | Aggregated lint findings |
 | Baseline delta | `.assay-reports/baseline-diff.json` | Added/removed/unchanged finding signal vs baseline |
-| Per-bundle SARIF | `.assay-reports/lint-<bundle>.sarif` | Bundle-scoped projection |
+| Per-bundle SARIF | `.assay-reports/lint-<bundle>.sarif` | Bundle-scoped projection. `<bundle>` is the file name without `.tar.gz`, with characters outside letters, digits, `.`, `_` and `-` replaced by `_`; a second bundle with the same name gets `-2`, a third `-3` |
 
 The reports artifact is intentionally named and visible. If a reviewer asks
 "what did this run check?", download `assay-reports-${{ github.run_id }}`.

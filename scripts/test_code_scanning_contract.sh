@@ -198,6 +198,28 @@ if BUNDLES_PATTERN="" run_job same-name "" "./failing-pack.yaml" b.tar.gz=clean.
   check "same name: the pack step lists two different reports" test "$(sort -u "$REPORTS/pack-sarif-files.list" | wc -l | tr -d ' ')" = "2"
 fi
 
+# The naming function on its own: every bundle of a run gets a name no other holds, the name is a plain file name
+# whatever the bundle is called, and it returns for any input.
+if [[ -f "$REPO_ROOT/scripts/unique_stem.sh" ]]; then
+  stems="$(/bin/bash -c '
+    source "$1"; used=$(mktemp); : > "$used"
+    for bundle in a/b.tar.gz c/b.tar.gz d/b-2.tar.gz e/b.tar.gz "f/x y.tar.gz" "g/x y.tar.gz" $'"'"'h/n\nl.tar.gz'"'"' $'"'"'i/n\nl.tar.gz'"'"' "j/-rf.tar.gz"; do
+      unique_stem "$used" "$bundle"
+    done' _ "$REPO_ROOT/scripts/unique_stem.sh" 2>&1 &
+    pid=$!; ( sleep 10; kill "$pid" 2>/dev/null ) & wait "$pid")" || true
+  check "stem: nine bundles get nine names" test "$(grep -c . <<<"$stems")" = "9"
+  check "stem: no two bundles share a name" test "$(sort -u <<<"$stems" | grep -c .)" = "9"
+  check "stem: the first bundle keeps its name and the next one is numbered from 2" test \
+    "$(sed -n '1p;2p' <<<"$stems" | tr '\n' ' ')" = "b b-2 "
+  if grep -qvE '^[A-Za-z0-9._-]+$' <<<"$stems"; then
+    fail "stem: a name holds a character that is not safe in a file name: $(grep -vE '^[A-Za-z0-9._-]+$' <<<"$stems" | head -n1)"
+  else
+    pass "stem: every name is a plain file name"
+  fi
+else
+  fail "stem: scripts/unique_stem.sh does not exist"
+fi
+
 # A report left by an earlier use of the action in the same job is not this run's report. When this run's review
 # step wrote none, the category step must not stamp the old file or call it ready.
 step_script sarif-category > "$WORK/category-only.sh"
@@ -271,7 +293,8 @@ if step_script pack-sarif > "$WORK/pack-sarif-only.sh" 2>/dev/null; then
   printf '%s\n' "$WORK/unnamed/pack-lint-x.sarif" > "$WORK/unnamed/pack-sarif-files.list"
   env -i PATH="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" GITHUB_ACTION_PATH="$REPO_ROOT" \
     GITHUB_OUTPUT="$WORK/unnamed/out" CATEGORY="cat" REPORTS_DIR="$WORK/unnamed" bash "$WORK/pack-sarif-only.sh" \
-    > "$WORK/unnamed/log" 2>&1 || true
+    > "$WORK/unnamed/log" 2>&1 && unnamed_code=0 || unnamed_code=$?
+  check "pack: a report that names no applied pack does not fail the job" test "$unnamed_code" = "0"
   if [[ ! -e "$WORK/unnamed/pack-code-scanning.sarif" ]] && ! grep -q '^ready=true$' "$WORK/unnamed/out" 2>/dev/null \
     && grep -q '::warning::' "$WORK/unnamed/log"; then
     pass "pack: a report that names no applied pack is not uploaded as an empty analysis, and says so"
@@ -303,6 +326,9 @@ if grep -q '^uploaded=false$' "$WORK/status.out" && ! grep -qi 'upload failed' <
 else
   fail "status: a skipped upload is reported as a failed one ($status_log)"
 fi
+status_log="$(env -i PATH="/usr/bin:/bin" GITHUB_OUTPUT="$WORK/status.out" UPLOAD_OUTCOME=skipped IS_FORK_PR=true \
+  SARIF_READY="" bash "$WORK/status.sh" 2>&1 || true)"
+check "status: on a fork pull request without a SARIF file the reason given is the missing file" grep -q 'No SARIF file was written' <<<"$status_log"
 status_log="$(env -i PATH="/usr/bin:/bin" GITHUB_OUTPUT="$WORK/status.out" UPLOAD_OUTCOME=failure IS_FORK_PR=false \
   SARIF_READY="true" bash "$WORK/status.sh" 2>&1 || true)"
 check "status: a failed upload is still reported as one (control)" grep -qi 'upload failed' <<<"$status_log"
