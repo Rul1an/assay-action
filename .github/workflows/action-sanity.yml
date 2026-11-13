@@ -242,6 +242,48 @@ jobs:
         shell: bash
         run: ASSAY_BIN_DIR="$(dirname "$(command -v assay)")" bash scripts/test_code_scanning_contract.sh
 
+  # Not a required context. The conditions that let the pack step follow a failed lint gate are
+  # GitHub expressions; the contract test reads them, and this job evaluates them on a runner.
+  lint-gate-then-pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Review a bundle with a warning at fail_on warn, with a pack
+        id: review
+        continue-on-error: true
+        uses: ./
+        with:
+          version: ${{ env.ASSAY_PINNED_VERSION }}
+          bundles: scripts/fixtures/cli-verdict/warning.tar.gz
+          fail_on: warn
+          pack: ./scripts/fixtures/cli-verdict/failing-pack.yaml
+          sarif: false
+          comment_diff: false
+
+      - name: Assert the lint gate failed the step and the pack step still ran
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.review.outcome }}
+          FINDINGS_WARN: ${{ steps.review.outputs.findings_warn }}
+          PACK_STATUS: ${{ steps.review.outputs.pack_status }}
+          PACK_APPLIED: ${{ steps.review.outputs.pack_applied }}
+        run: |
+          set -euo pipefail
+          echo "outcome=$OUTCOME findings_warn=$FINDINGS_WARN pack_status=$PACK_STATUS pack_applied=$PACK_APPLIED"
+          # The step failed, and on the lint gate: a warning was counted at fail_on warn.
+          test "$OUTCOME" = "failure"
+          test "$FINDINGS_WARN" -ge 1
+          # The pack step ran after that failure: its outputs exist only when it did.
+          test "$PACK_STATUS" = "success"
+          test "$PACK_APPLIED" = "cli-verdict-fixture@1.0.0"
+          test -f .assay-reports/pack-lint.sarif
+
   required-zero-pr:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

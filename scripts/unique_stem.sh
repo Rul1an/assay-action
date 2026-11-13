@@ -10,6 +10,9 @@
 # Sourced by the action's steps; one definition, so lint and pack reports are named by one rule.
 unique_stem() {
   local used=$1 base stem n=1
+  # In the C locale a range means its ASCII characters; under a UTF-8 locale `A-Z` also matches
+  # accented letters in some shells.
+  local LC_ALL=C
   base=${2##*/}
   base=${base%.tar.gz}
   # A report name is a plain file name whatever the bundle is called: every character outside
