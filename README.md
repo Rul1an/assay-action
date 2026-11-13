@@ -193,10 +193,11 @@ is correct or safe. It makes the observed evidence boundary reviewable.
 | --- | --- | --- |
 | Job summary | GitHub Actions run summary | Fast PR review surface |
 | Reports artifact | `assay-reports-${{ github.run_id }}` | Downloadable evidence review pack |
-| SARIF | `.assay-reports/lint.sarif` | GitHub code scanning upload |
+| SARIF | `.assay-reports/lint.sarif` | GitHub code scanning upload: one run with the findings of every bundle |
+| Pack SARIF | `.assay-reports/pack-code-scanning.sarif` | Code scanning upload of pack findings, when `pack` is set |
 | JSON report | `.assay-reports/lint.json` | Aggregated lint findings |
 | Baseline delta | `.assay-reports/baseline-diff.json` | Added/removed/unchanged finding signal vs baseline |
-| Per-bundle SARIF | `.assay-reports/lint-<bundle>.sarif` | Bundle-scoped projection |
+| Per-bundle SARIF | `.assay-reports/lint-<bundle>.sarif` | Bundle-scoped projection. `<bundle>` is the file name without `.tar.gz`, with characters outside letters, digits, `.`, `_` and `-` replaced by `_`; a second bundle with the same name gets `-2`, a third `-3` |
 
 The reports artifact is intentionally named and visible. If a reviewer asks
 "what did this run check?", download `assay-reports-${{ github.run_id }}`.
@@ -270,12 +271,34 @@ for usage, guardrails, and the feedback path.
 | `fail_on` | `error` | Fail threshold: `error`, `warn` (or `warning`), `info`, `none`. The CLI validates the value. |
 | `evidence_mode` | `optional` | `optional` or `required`. `required` fails when discovery finds no bundles. Empty, whitespace-only, and unrecognized values fail closed. The default is declared only on the Action input. |
 | `sarif` | `true` | Upload SARIF to GitHub code scanning |
-| `category` | auto-generated | SARIF category |
+| `category` | auto-generated | Code scanning category. Pack findings use `<category>/pack` |
 | `baseline_key` | repository key | Baseline cache lookup key |
 | `baseline_dir` | empty | Local baseline reports directory containing `lint.json` |
 | `write_baseline` | `false` | Save baseline on `main` after a successful run |
 | `comment_diff` | `true` | Post a PR comment when findings, verification failures, or baseline finding diffs exist |
 | `version` | `latest` | Assay CLI version to install |
+
+## Code scanning
+
+With `sarif: true` the action uploads two analyses of the tool `assay-evidence-lint`:
+
+| Analysis | Category | Holds |
+| --- | --- | --- |
+| Lint | `<category>` | The findings of every reviewed bundle, as one run |
+| Pack | `<category>/pack` | The findings of the rules in `pack`, when `pack` is set. Uploaded also when the pack gate fails the job |
+
+`<category>` is the `category` input, or `assay-<workflow>-<job>-<os>` when it is not set. The
+category stays the same from run to run, so an alert closes when its finding is gone. In v3.4.0
+and earlier the category the action set was not used: each run was filed under the bundle's run id and
+the CLI version, and only the first bundle's findings were uploaded. Alerts filed under those old
+categories do not close on their own; delete the old analyses, or dismiss the alerts, once.
+
+The lint analysis is uploaded also when `fail_on` fails the job. If you remove `pack` later, the
+pack analysis is no longer uploaded and its open alerts stay open; delete that analysis, or dismiss
+the alerts.
+
+Rules a pack did not run are not findings and do not appear in code scanning. See
+`pack_rules_not_run` and the job summary.
 
 ## Outputs
 
